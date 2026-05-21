@@ -43209,9 +43209,12 @@ async function notifyQueueUsers(bot, newUserTikTok, newUserTelegramId) {
     })
   );
   const usersToNotify = filtered.filter(Boolean);
+  if (eligibleUsers.length === 0) {
+    console.log(`[MATCH_HISTORY_EMPTY] No eligible users found in DB for notification (all filtered out by state/ban/cooldown). newUserTikTok=@${newUserTikTok}`);
+  }
   console.log(`[QUEUE] @${newUserTikTok} joined queue. Notifying ${usersToNotify.length}/${eligibleUsers.length} eligible user(s) (${eligibleUsers.length - usersToNotify.length} skipped \u2014 recent pair).`);
-  if (usersToNotify.length === 0) {
-    console.log(`[QUEUE] Queue empty \u2014 no eligible users to notify for @${newUserTikTok}.`);
+  if (usersToNotify.length === 0 && eligibleUsers.length > 0) {
+    console.log(`[NOTIFICATION_SKIPPED_ALL] All ${eligibleUsers.length} eligible user(s) were skipped due to recent pair cooldown. newUserTikTok=@${newUserTikTok}`);
   }
   let sentCount = 0;
   for (const u of usersToNotify) {
@@ -43228,7 +43231,7 @@ Buka bot sekarang untuk mula swap cut price link \u{1F91D}`,
       );
       await User.updateOne({ telegramId: u.telegramId }, { lastNotifiedAt: /* @__PURE__ */ new Date() });
       sentCount++;
-      console.log(`[NOTIFY] Sent notification to telegramId=${u.telegramId} (@${u.tiktokUsername})`);
+      console.log(`[NOTIFICATION_SENT] telegramId=${u.telegramId} (@${u.tiktokUsername}) notified about newUser=@${newUserTikTok}`);
     } catch (err) {
       console.error(`[NOTIFY] Failed to notify telegramId=${u.telegramId}: ${err.message}`);
     }
@@ -43379,8 +43382,12 @@ async function hasRecentMatch(userIdA, userIdB) {
   const since = new Date(Date.now() - COOLDOWN_MS);
   const pairKey = [userIdA, userIdB].sort((a, b) => a - b).join(":");
   const existing = await MatchHistory.findOne({ pairKey, matchedAt: { $gte: since } });
-  if (!existing) {
-    console.log(`[REMATCH_ALLOWED_AFTER_24H] pairKey=${pairKey} \u2014 eligible.`);
+  if (existing) {
+    const ageMin = Math.round((Date.now() - existing.matchedAt.getTime()) / (1e3 * 60));
+    const resetInMin = Math.round((COOLDOWN_MS - (Date.now() - existing.matchedAt.getTime())) / (1e3 * 60));
+    console.log(`[RECENT_PAIR_CHECK_RESULT] pairKey=${pairKey} \u2014 BLOCKED (matched ${ageMin} min ago, cooldown resets in ${resetInMin} min)`);
+  } else {
+    console.log(`[RECENT_PAIR_CHECK_RESULT] pairKey=${pairKey} \u2014 ALLOWED (no match history in last 24h)`);
   }
   return existing !== null;
 }
@@ -43842,8 +43849,18 @@ _(Max balance: ${MAX_CUT_BALANCE} cuts per account)_`,
     if (args.length === 0) {
       const since = new Date(Date.now() - COOLDOWN_MS);
       const result = await MatchHistory.deleteMany({ matchedAt: { $gte: since } });
-      console.log(`[ADMIN] clear_match_history: wiped ${result.deletedCount} record(s) from last 24h by telegramId=${ctx.from.id}`);
-      await ctx.reply(`\u{1F5D1}\uFE0F Cleared *${result.deletedCount}* match history record(s) from the last 24 hours.`, { parse_mode: "Markdown" });
+      const userResetResult = await User.updateMany(
+        {},
+        { $set: { lastMatchPartnerId: null, lastNotifiedAt: null } }
+      );
+      console.log(`[MATCH_HISTORY_CLEARED] Wiped ${result.deletedCount} MatchHistory record(s) from last 24h. Reset lastMatchPartnerId+lastNotifiedAt on ${userResetResult.modifiedCount} user(s). Admin telegramId=${ctx.from.id}`);
+      await ctx.reply(
+        `\u{1F5D1}\uFE0F Cleared *${result.deletedCount}* match history record(s) from the last 24 hours.
+\u{1F504} Reset notification cooldown & partner cache on *${userResetResult.modifiedCount}* user(s).
+
+\u2705 All users can now receive notifications immediately.`,
+        { parse_mode: "Markdown" }
+      );
       return;
     }
     if (args.length === 2) {
@@ -43863,15 +43880,98 @@ _(Max balance: ${MAX_CUT_BALANCE} cuts per account)_`,
       }
       const pairKey = [uA.telegramId, uB.telegramId].sort((a, b) => a - b).join(":");
       const result = await MatchHistory.deleteMany({ pairKey });
-      console.log(`[ADMIN] clear_match_history: wiped ${result.deletedCount} record(s) for pairKey=${pairKey} (@${usernameA} \u2194\uFE0F @${usernameB}) by telegramId=${ctx.from.id}`);
-      await ctx.reply(`\u{1F5D1}\uFE0F Cleared *${result.deletedCount}* history record(s) for @${usernameA} \u2194\uFE0F @${usernameB}
-\`pairKey: ${pairKey}\``, { parse_mode: "Markdown" });
+      await Promise.all([
+        User.updateOne({ telegramId: uA.telegramId }, { $set: { lastMatchPartnerId: null, lastNotifiedAt: null } }),
+        User.updateOne({ telegramId: uB.telegramId }, { $set: { lastMatchPartnerId: null, lastNotifiedAt: null } })
+      ]);
+      console.log(`[MATCH_HISTORY_CLEARED] Wiped ${result.deletedCount} record(s) for pairKey=${pairKey} (@${usernameA} \u2194\uFE0F @${usernameB}). Reset lastMatchPartnerId+lastNotifiedAt for both users. Admin telegramId=${ctx.from.id}`);
+      await ctx.reply(
+        `\u{1F5D1}\uFE0F Cleared *${result.deletedCount}* history record(s) for @${usernameA} \u2194\uFE0F @${usernameB}
+\`pairKey: ${pairKey}\`
+\u{1F504} Reset notification cooldown & partner cache for both users.`,
+        { parse_mode: "Markdown" }
+      );
       return;
     }
     await ctx.reply(
       "\u2139\uFE0F Usage:\n`/clear_match_history` \u2014 clear all last-24h history\n`/clear_match_history @userA @userB` \u2014 clear history for a specific pair",
       { parse_mode: "Markdown" }
     );
+  });
+  bot.command("debug_notifications", async (ctx) => {
+    const adminIds = (process.env["ADMIN_IDS"] ?? "").split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
+    if (!adminIds.includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    const targetTikTok = args[0]?.replace(/^@/, "") ?? null;
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1e3);
+    const now = /* @__PURE__ */ new Date();
+    let newUserTelegramId = null;
+    let newUserTikTok = targetTikTok ?? "(unknown)";
+    if (targetTikTok) {
+      const targetUser = await User.findOne({ tiktokUsername: targetTikTok }).select("telegramId tiktokUsername");
+      if (!targetUser) {
+        await ctx.reply(`\u274C User @${targetTikTok} not found.`);
+        return;
+      }
+      newUserTelegramId = targetUser.telegramId;
+    }
+    const candidateFilter = {
+      tiktokUsername: { $nin: ["__pending__", ""] },
+      isBanned: false,
+      state: { $in: ["awaiting_cut_link", "idle"] },
+      $and: [
+        { $or: [{ suspendedUntil: null }, { suspendedUntil: { $lte: now } }] },
+        { $or: [{ cancelCooldownUntil: null }, { cancelCooldownUntil: { $lte: now } }] },
+        { $or: [{ lastNotifiedAt: null }, { lastNotifiedAt: { $lte: tenMinutesAgo } }] }
+      ]
+    };
+    if (newUserTelegramId !== null) {
+      candidateFilter["telegramId"] = { $ne: newUserTelegramId };
+    }
+    const candidates = await User.find(candidateFilter);
+    const willReceive = [];
+    const willSkip = [];
+    for (const u of candidates) {
+      if (newUserTelegramId !== null) {
+        const since = new Date(Date.now() - COOLDOWN_MS);
+        const pairKey = [u.telegramId, newUserTelegramId].sort((a, b) => a - b).join(":");
+        const existing = await MatchHistory.findOne({ pairKey, matchedAt: { $gte: since } });
+        if (existing) {
+          const ageMin = Math.round((Date.now() - existing.matchedAt.getTime()) / (1e3 * 60));
+          const resetInMin = Math.round((COOLDOWN_MS - (Date.now() - existing.matchedAt.getTime())) / (1e3 * 60));
+          willSkip.push(`@${u.tiktokUsername} (tgId=${u.telegramId}) \u2014 RECENT_PAIR, matched ${ageMin} min ago, resets in ${resetInMin} min`);
+          continue;
+        }
+      }
+      const notifAge = u.lastNotifiedAt ? Math.round((Date.now() - u.lastNotifiedAt.getTime()) / (1e3 * 60)) : null;
+      willReceive.push(`@${u.tiktokUsername} (tgId=${u.telegramId}) state=${u.state}${notifAge !== null ? ` lastNotified=${notifAge} min ago` : " lastNotified=never"}`);
+    }
+    const lines = [];
+    lines.push(`\u{1F50D} *Notification Debug*`);
+    lines.push(`Target (new user): @${newUserTikTok}${newUserTelegramId ? ` (tgId=${newUserTelegramId})` : " (no target specified \u2014 showing all candidates)"}`);
+    lines.push(`
+Candidates found: ${candidates.length}`);
+    if (willReceive.length > 0) {
+      lines.push(`
+\u2705 *Will RECEIVE (${willReceive.length}):*`);
+      willReceive.forEach((r) => lines.push(`  \u2022 ${r}`));
+    } else {
+      lines.push(`
+\u2705 Will RECEIVE: none`);
+    }
+    if (willSkip.length > 0) {
+      lines.push(`
+\u26D4 *Will SKIP (${willSkip.length}):*`);
+      willSkip.forEach((s) => lines.push(`  \u2022 ${s}`));
+    } else {
+      lines.push(`
+\u26D4 Will SKIP: none`);
+    }
+    console.log(`[DEBUG_NOTIFICATIONS] Admin telegramId=${ctx.from.id} ran debug. Target=@${newUserTikTok} candidates=${candidates.length} willReceive=${willReceive.length} willSkip=${willSkip.length}`);
+    await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
   });
   bot.command("reset_user", async (ctx) => {
     const adminIds = (process.env["ADMIN_IDS"] ?? "").split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
