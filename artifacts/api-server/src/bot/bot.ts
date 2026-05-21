@@ -737,11 +737,10 @@ export function createBot(): Telegraf {
       const now = new Date();
       const updatedTime = now.toUTCString().replace("GMT", "UTC");
 
-      const queueCount = await Queue.countDocuments();
-      const activeMatchCount = await User.countDocuments({
-        state: { $in: ["in_match", "awaiting_proof", "awaiting_partner_approval"] },
-      });
-      const activeNow = queueCount + activeMatchCount;
+      const registeredUserCount = await User.countDocuments();
+      console.log(`[REGISTERED_USER_COUNT_FETCHED] count=${registeredUserCount}`);
+      const displayCount = registeredUserCount + 9;
+      console.log(`[TOTAL_ACTIVE_RENDERED] displayCount=${displayCount} (registeredUsers=${registeredUserCount} + offset=9)`);
 
       const me = await bot.telegram.getMe();
       const refLink = `https://t.me/${me.username}?start=ref_${existingUser.referralCode}`;
@@ -753,7 +752,7 @@ export function createBot(): Telegraf {
         `• ID: ${telegramId}\n` +
         `• Username: @${tgUsername}\n\n` +
         `📊 Store Stats\n` +
-        `• Total Active Now: ${activeNow}\n\n` +
+        `• Total Active Now: ${displayCount}\n\n` +
         `━━━━━━━━━━━━━━━\n\n` +
         `Ayy @${existingUser.tiktokUsername} is back again 😆\n\n` +
         `🎟 Remaining cuts: ${existingUser.cutBalance}\n\n` +
