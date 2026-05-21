@@ -1,7 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { connectDB } from "./bot/db";
-import { createBot } from "./bot/bot";
+import { createBot, cleanupStaleQueue } from "./bot/bot";
 
 const rawPort = process.env["PORT"];
 const port = rawPort ? Number(rawPort) : null;
@@ -12,6 +12,10 @@ if (port !== null && (Number.isNaN(port) || port <= 0)) {
 
 async function main() {
   await connectDB();
+
+  console.log("[STARTUP] Running stale queue cleanup...");
+  await cleanupStaleQueue();
+  console.log("[STARTUP] Stale queue cleanup complete.");
 
   const bot = createBot();
   console.log("Clearing any existing Telegram webhook...");
