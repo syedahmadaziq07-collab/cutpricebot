@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "echo 'Using pre-compiled dist'",
-    "start": "node index.js"
+    "start": "node artifacts/api-server/dist/index.mjs"
   },
   "dependencies": {
     "mongoose": "^9.6.2"
