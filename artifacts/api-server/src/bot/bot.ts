@@ -38,6 +38,7 @@ async function notifyQueueUsers(
 ): Promise<void> {
   const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
 
+  const now = new Date();
   const eligibleUsers = await User.find({
     telegramId: { $ne: newUserTelegramId },
     tiktokUsername: { $nin: ["__pending__", ""] },
@@ -46,7 +47,13 @@ async function notifyQueueUsers(
       {
         $or: [
           { suspendedUntil: null },
-          { suspendedUntil: { $lte: new Date() } },
+          { suspendedUntil: { $lte: now } },
+        ],
+      },
+      {
+        $or: [
+          { cancelCooldownUntil: null },
+          { cancelCooldownUntil: { $lte: now } },
         ],
       },
       {
@@ -276,6 +283,11 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
 
   const matchId = (match._id as { toString(): string }).toString();
 
+  const matchButtons = Markup.inlineKeyboard([
+    Markup.button.callback("✅ Done Cut", "done_cut"),
+    Markup.button.callback("❌ Cancel Match (24h cooldown)", "cancel_match"),
+  ]);
+
   const msgForCurrentUser =
     `✅ *Partner dijumpai!*\n\n` +
     `Partner anda:\n@${partner.tiktokUsername}\n\n` +
@@ -289,8 +301,8 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
     `Sila cut link partner anda dahulu 🤝`;
 
   await Promise.all([
-    bot.telegram.sendMessage(telegramId, msgForCurrentUser, { parse_mode: "Markdown" }),
-    bot.telegram.sendMessage(partner.telegramId, msgForPartner, { parse_mode: "Markdown" }),
+    bot.telegram.sendMessage(telegramId, msgForCurrentUser, { parse_mode: "Markdown", ...matchButtons }),
+    bot.telegram.sendMessage(partner.telegramId, msgForPartner, { parse_mode: "Markdown", ...matchButtons }),
   ]);
 
   const timer = setTimeout(async () => {
@@ -305,7 +317,7 @@ async function confirmSwap(
   telegramId: number,
 ): Promise<void> {
   const user = await User.findOne({ telegramId });
-  if (!user || user.state !== "in_match") return;
+  if (!user || user.state !== "awaiting_proof") return;
 
   const match = await Match.findOne({
     $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
@@ -332,31 +344,20 @@ async function confirmSwap(
   const updatedMatch = await Match.findById(match._id);
   if (!updatedMatch) return;
 
+  await bot.telegram.sendMessage(
+    telegramId,
+    "Bukti diterima ✅\nTunggu partner anda complete juga.",
+  );
+
+  console.log(`[PROOF_SUBMITTED] telegramId=${telegramId} submitted proof for matchId=${match._id}.`);
+
   const newBalance = Math.max(0, user.cutBalance - 1);
   await User.updateOne(
     { telegramId },
-    { state: "awaiting_cut_link", cutBalance: newBalance, pendingLink: null, queuedAt: null },
+    { state: "awaiting_cut_link", cutBalance: newBalance, pendingLink: null, queuedAt: null, isWaiting: false },
   );
 
-  if (newBalance === 0) {
-    const refLink = `https://t.me/${(await bot.telegram.getMe()).username}?start=ref_${user.referralCode}`;
-    await bot.telegram.sendMessage(
-      telegramId,
-      `✅ *Swap done!* Cut babi tinggal: *0/16* 😮\n\nKau dah habis semua cuts!\n\n🔥 Nak lagi? Share bot ni & dapat *+3 cuts* setiap orang yang join!\n\n${refLink}`,
-      { parse_mode: "Markdown" },
-    );
-  } else {
-    await bot.telegram.sendMessage(
-      telegramId,
-      `✅ *Swap done!* Cut baki: *${newBalance}/16* 🎉`,
-      {
-        parse_mode: "Markdown",
-        ...Markup.inlineKeyboard([
-          Markup.button.callback("🔁 Cut More!", "cut_more"),
-        ]),
-      },
-    );
-  }
+  const partner = await User.findOne({ telegramId: partnerId });
 
   if (updatedMatch.user1Confirmed && updatedMatch.user2Confirmed) {
     const timerId = match._id.toString();
@@ -366,13 +367,30 @@ async function confirmSwap(
       matchTimers.delete(timerId);
     }
     await Match.updateOne({ _id: match._id }, { status: "completed" });
+
+    if (newBalance === 0) {
+      const refLink = `https://t.me/${(await bot.telegram.getMe()).username}?start=ref_${user.referralCode}`;
+      await bot.telegram.sendMessage(
+        telegramId,
+        `✅ *Swap selesai!* Cut baki: *0/16* 😮\n\nKau dah habis semua cuts!\n\n🔥 Nak lagi? Share bot ni & dapat *+3 cuts* setiap orang yang join!\n\n${refLink}`,
+        { parse_mode: "Markdown" },
+      );
+    } else {
+      await bot.telegram.sendMessage(
+        telegramId,
+        `✅ *Swap selesai!* Cut baki: *${newBalance}/16* 🎉`,
+        {
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([Markup.button.callback("🔁 Cut Lagi!", "cut_more")]),
+        },
+      );
+    }
   }
 
-  const partner = await User.findOne({ telegramId: partnerId });
-  if (partner && partner.state === "in_match") {
+  if (partner && (partner.state === "in_match" || partner.state === "awaiting_proof")) {
     await bot.telegram.sendMessage(
       partnerId,
-      "📸 Partner dah hantar proof! Tunggu turn kau — hantar screenshot jugak k.",
+      "📸 Partner anda telah menghantar bukti. Sila hantar screenshot anda juga untuk melengkapkan swap.",
     );
   }
 }
@@ -475,6 +493,7 @@ export function createBot(): Telegraf {
       awaiting_cut_link: "⏳ Tunggu link",
       in_queue: "🔍 Cari partner...",
       in_match: "🤝 In match",
+      awaiting_proof: "📸 Menunggu bukti",
     };
     await ctx.reply(
       `📊 *Status kau:*\n\nTikTok: @${user.tiktokUsername}\nCut baki: ${user.cutBalance}/16\nStrikes: ${user.strikes}/3\nStatus: ${statusMap[user.state] ?? user.state}`,
@@ -498,14 +517,22 @@ export function createBot(): Telegraf {
       return;
     }
 
-    if (user.state !== "in_match") {
+    if (user.state === "in_match") {
       await ctx.reply(
-        "Screenshot untuk apa ni? 😅 Kau takde match active laa. Submit link dulu!",
+        "Sila tekan butang *✅ Done Cut* dahulu sebelum menghantar bukti ya.",
+        { parse_mode: "Markdown" },
       );
       return;
     }
 
-    await ctx.reply("🔍 Checking proof kau...");
+    if (user.state !== "awaiting_proof") {
+      await ctx.reply(
+        "Tiada match aktif. Hantar link TikTok anda dahulu untuk mula.",
+      );
+      return;
+    }
+
+    await ctx.reply("🔍 Memeriksa bukti anda...");
 
     await confirmSwap(bot, telegramId);
   });
@@ -613,6 +640,17 @@ export function createBot(): Telegraf {
     }
 
     if (user.state === "awaiting_cut_link") {
+      if (user.cancelCooldownUntil && user.cancelCooldownUntil > new Date()) {
+        const remaining = Math.ceil(
+          (user.cancelCooldownUntil.getTime() - Date.now()) / (1000 * 60 * 60),
+        );
+        await ctx.reply(
+          `❌ Akaun anda masih dalam cooldown selama *${remaining} jam* lagi.\n\nAnda boleh menggunakan sistem semula selepas tempoh ini tamat.`,
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+
       if (user.cutBalance <= 0) {
         const me = await bot.telegram.getMe();
         const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
@@ -658,15 +696,111 @@ export function createBot(): Telegraf {
 
     if (user.state === "in_match") {
       await ctx.reply(
-        "Hantar *screenshot* sebagai proof kau dah swap k! 📸",
+        "Sila tekan butang *✅ Done Cut* apabila anda selesai cut link partner.",
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+
+    if (user.state === "awaiting_proof") {
+      await ctx.reply(
+        "Sila hantar *screenshot* sebagai bukti anda telah cut link partner. 📸",
         { parse_mode: "Markdown" },
       );
       return;
     }
 
     await ctx.reply(
-      "Taip /start untuk mula atau /status untuk check progress kau!",
+      "Taip /start untuk mula atau /status untuk semak status anda.",
     );
+  });
+
+  bot.action("done_cut", async (ctx) => {
+    await ctx.answerCbQuery();
+    const telegramId = ctx.from!.id;
+
+    const user = await User.findOne({ telegramId });
+    if (!user || user.state !== "in_match") {
+      await ctx.reply("Tiada match aktif untuk disahkan.");
+      return;
+    }
+
+    await User.updateOne({ telegramId }, { state: "awaiting_proof" });
+    await ctx.reply(
+      "📸 Sila hantar *screenshot* sebagai bukti anda telah cut link partner.",
+      { parse_mode: "Markdown" },
+    );
+  });
+
+  bot.action("cancel_match", async (ctx) => {
+    await ctx.answerCbQuery();
+    const telegramId = ctx.from!.id;
+
+    const user = await User.findOne({ telegramId });
+    if (!user || user.state !== "in_match") {
+      await ctx.reply("Tiada match aktif untuk dibatalkan.");
+      return;
+    }
+
+    const match = await Match.findOne({
+      $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
+      status: "active",
+    });
+
+    if (!match) {
+      await ctx.reply("Tiada match aktif.");
+      return;
+    }
+
+    const partnerId = match.user1Id === telegramId ? match.user2Id : match.user1Id;
+    const partner = await User.findOne({ telegramId: partnerId });
+
+    await Match.updateOne({ _id: match._id }, { status: "cancelled" });
+
+    const timerId = match._id.toString();
+    const existingTimer = matchTimers.get(timerId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      matchTimers.delete(timerId);
+    }
+
+    const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);
+    await User.updateOne(
+      { telegramId },
+      { state: "idle", isWaiting: false, queuedAt: null, cancelCooldownUntil: cooldownUntil, pendingLink: null },
+    );
+
+    console.log(`[MATCH_CANCELLED] telegramId=${telegramId} (@${user.tiktokUsername}) cancelled the match.`);
+    console.log(`[USER_COOLDOWN] telegramId=${telegramId} on cooldown until ${cooldownUntil.toISOString()}.`);
+
+    await ctx.reply(
+      "❌ *Match dibatalkan.*\n\nAkaun anda dalam cooldown selama 24 jam sebelum boleh menggunakan sistem semula.",
+      { parse_mode: "Markdown" },
+    );
+
+    if (partner) {
+      const partnerHasLink = !!partner.pendingLink;
+      const now = new Date();
+
+      await User.updateOne(
+        { telegramId: partnerId },
+        partnerHasLink
+          ? { state: "in_queue", isWaiting: true, queuedAt: now }
+          : { state: "awaiting_cut_link", isWaiting: false, queuedAt: null },
+      );
+
+      await bot.telegram.sendMessage(
+        partnerId,
+        "⚠️ *Partner anda telah membatalkan match.*\n\nSistem sedang mencari partner baru untuk anda 🤝",
+        { parse_mode: "Markdown" },
+      );
+
+      console.log(`[PARTNER_REQUEUED] telegramId=${partnerId} (@${partner.tiktokUsername ?? "unknown"}) requeued after cancel.`);
+
+      if (partnerHasLink) {
+        await tryMatch(bot, partnerId);
+      }
+    }
   });
 
   bot.action("cut_more", async (ctx) => {

@@ -13,6 +13,7 @@ export interface IUser extends Document {
   isBanned: boolean;
   lastMatchPartnerId: number | null;
   isWaiting: boolean;
+  cancelCooldownUntil: Date | null;
   state: string;
   pendingLink: string | null;
   lastNotifiedAt: Date | null;
@@ -35,6 +36,7 @@ const userSchema = new mongoose.Schema<IUser>(
     isBanned: { type: Boolean, default: false },
     lastMatchPartnerId: { type: Number, default: null },
     isWaiting: { type: Boolean, default: false },
+    cancelCooldownUntil: { type: Date, default: null },
     state: { type: String, default: "idle" },
     pendingLink: { type: String, default: null },
     lastNotifiedAt: { type: Date, default: null },

@@ -5,7 +5,7 @@ export interface IMatch extends Document {
   user2Id: number;
   link1: string;
   link2: string;
-  status: "active" | "completed" | "expired";
+  status: "active" | "completed" | "expired" | "cancelled";
   user1Confirmed: boolean;
   user2Confirmed: boolean;
   expiresAt: Date;
@@ -21,7 +21,7 @@ const matchSchema = new mongoose.Schema<IMatch>(
     link2: { type: String, default: "" },
     status: {
       type: String,
-      enum: ["active", "completed", "expired"],
+      enum: ["active", "completed", "expired", "cancelled"],
       default: "active",
     },
     user1Confirmed: { type: Boolean, default: false },
