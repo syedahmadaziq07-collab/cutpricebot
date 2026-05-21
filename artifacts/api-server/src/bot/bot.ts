@@ -771,7 +771,7 @@ export function createBot(): Telegraf {
 
     console.log(`[PROOF_SUBMITTED] telegramId=${telegramId} submitted proof for matchId=${matchId}.`);
     await User.updateOne({ telegramId }, { state: "awaiting_partner_approval" });
-    await ctx.reply("✅ Bukti anda telah dihantar.\nTunggu partner anda semak dan approve bukti tersebut.");
+    await ctx.reply("✅ Bukti berjaya dihantar.\nTunggu partner anda semak bukti tersebut.");
 
     const approveButtons = Markup.inlineKeyboard([
       Markup.button.callback("✅ Approve Proof", `approve_proof:${matchId}:${telegramId}`),
@@ -779,10 +779,11 @@ export function createBot(): Telegraf {
     ]);
 
     await bot.telegram.sendPhoto(partnerId, proofFileId, {
-      caption: `📸 *Partner anda telah menghantar bukti cut.*\n\nSila semak bukti di bawah sebelum approve.`,
+      caption: `📸 *Partner anda telah menghantar bukti cut.*\n\nSila semak bukti di bawah.`,
       parse_mode: "Markdown",
       ...approveButtons,
     });
+    console.log(`[PROOF_SENT_TO_PARTNER] telegramId=${telegramId} proof forwarded to partnerId=${partnerId} for matchId=${matchId}.`);
   });
 
   bot.on(message("text"), async (ctx) => {
@@ -1015,6 +1016,7 @@ export function createBot(): Telegraf {
     const proofOwnerId = parseInt(ctx.match[2], 10);
 
     if (telegramId === proofOwnerId) {
+      console.log(`[SELF_APPROVAL_BLOCKED] telegramId=${telegramId} tried to approve their own proof for matchId=${matchId}.`);
       await ctx.reply("❌ Anda tidak boleh approve bukti anda sendiri.");
       return;
     }
@@ -1023,6 +1025,7 @@ export function createBot(): Telegraf {
     if (!match || match.status !== "active") { await ctx.reply("Match ini tidak lagi aktif."); return; }
 
     if (match.user1Id !== telegramId && match.user2Id !== telegramId) {
+      console.log(`[INVALID_CALLBACK_BLOCKED] telegramId=${telegramId} tried to approve proof for matchId=${matchId} but is not a participant.`);
       await ctx.reply("Anda bukan sebahagian daripada match ini.");
       return;
     }
@@ -1038,7 +1041,7 @@ export function createBot(): Telegraf {
     }
 
     console.log(`[PROOF_APPROVED] telegramId=${telegramId} approved proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
-    await bot.telegram.sendMessage(proofOwnerId, "✅ Bukti anda telah diapprove oleh partner.");
+    await bot.telegram.sendMessage(proofOwnerId, "✅ Partner anda telah approve bukti anda.");
     await checkAndCompleteMatch(bot, matchId);
   });
 
@@ -1049,6 +1052,7 @@ export function createBot(): Telegraf {
     const proofOwnerId = parseInt(ctx.match[2], 10);
 
     if (telegramId === proofOwnerId) {
+      console.log(`[SELF_APPROVAL_BLOCKED] telegramId=${telegramId} tried to reject their own proof for matchId=${matchId}.`);
       await ctx.reply("❌ Anda tidak boleh reject bukti anda sendiri.");
       return;
     }
@@ -1057,32 +1061,49 @@ export function createBot(): Telegraf {
     if (!match || match.status !== "active") { await ctx.reply("Match ini tidak lagi aktif."); return; }
 
     if (match.user1Id !== telegramId && match.user2Id !== telegramId) {
+      console.log(`[INVALID_CALLBACK_BLOCKED] telegramId=${telegramId} tried to reject proof for matchId=${matchId} but is not a participant.`);
       await ctx.reply("Anda bukan sebahagian daripada match ini.");
       return;
     }
 
-    const isProofOwnerUser1 = match.user1Id === proofOwnerId;
+    // Cancel the match
+    await Match.updateOne({ _id: match._id }, { status: "cancelled" });
 
-    if (isProofOwnerUser1) {
-      await Match.updateOne({ _id: matchId }, {
-        user1ProofSubmitted: false,
-        user1ProofMessageId: null,
-        user1ProofSubmittedAt: null,
-        user1Confirmed: false,
-      });
-    } else {
-      await Match.updateOne({ _id: matchId }, {
-        user2ProofSubmitted: false,
-        user2ProofMessageId: null,
-        user2ProofSubmittedAt: null,
-        user2Confirmed: false,
-      });
-    }
+    const timerId = match._id.toString();
+    const existingTimer = matchTimers.get(timerId);
+    if (existingTimer) { clearTimeout(existingTimer); matchTimers.delete(timerId); }
+
+    // Apply 24h cooldown to the proof owner (User A — the one whose proof was rejected)
+    const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);
+    await User.updateOne(
+      { telegramId: proofOwnerId },
+      { state: "idle", isWaiting: false, queuedAt: null, pendingLink: null, cancelCooldownUntil: cooldownUntil },
+    );
+    await Queue.deleteOne({ telegramId: proofOwnerId });
 
     console.log(`[PROOF_REJECTED] telegramId=${telegramId} rejected proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
-    await User.updateOne({ telegramId: proofOwnerId }, { state: "awaiting_proof" });
-    await bot.telegram.sendMessage(proofOwnerId, "⚠️ Bukti anda ditolak oleh partner.\n\nSila hantar screenshot yang jelas.");
-    await ctx.reply("✅ Anda telah menolak bukti partner. Mereka akan menghantar semula.");
+    console.log(`[USER_COOLDOWN_24H] telegramId=${proofOwnerId} placed on 24h cooldown until ${cooldownUntil.toISOString()} due to proof rejection.`);
+
+    // Notify User A (proof owner) — rejection + cooldown
+    try {
+      await bot.telegram.sendMessage(
+        proofOwnerId,
+        "❌ *Bukti anda ditolak oleh partner.*\n\nAkaun anda dikenakan cooldown selama 24 jam kerana gagal melengkapkan swap dengan betul.",
+        { parse_mode: "Markdown" },
+      );
+    } catch { /* user may have blocked bot */ }
+
+    // Notify User B (rejecter) — match cancelled, thank you
+    await ctx.reply("✅ *Match dibatalkan.*\nTerima kasih kerana membantu menjaga sistem CutSquad.", { parse_mode: "Markdown" });
+
+    // Re-queue User B if they have a pendingLink, otherwise reset to awaiting_cut_link
+    const rejecter = await User.findOne({ telegramId });
+    if (rejecter?.pendingLink) {
+      console.log(`[PARTNER_REQUEUED] telegramId=${telegramId} re-entering queue after proof rejection.`);
+      await addToQueue(bot, telegramId, rejecter.pendingLink);
+    } else {
+      await User.updateOne({ telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+    }
   });
 
   bot.action("cut_more", async (ctx) => {

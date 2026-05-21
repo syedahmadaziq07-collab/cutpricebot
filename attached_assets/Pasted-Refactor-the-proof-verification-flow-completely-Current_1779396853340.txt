@@ -1,0 +1,147 @@
+Refactor the proof verification flow completely.
+
+Current flow is wrong because users can see/press proof buttons for themselves.
+
+━━━━━━━━━━━━━━━━━━
+REQUIRED FLOW
+━━━━━━━━━━━━━━━━━━
+
+1. After partner match:
+Show buttons ONLY:
+
+✅ Done Cut
+❌ Cancel Match (24h cooldown)
+
+━━━━━━━━━━━━━━━━━━
+STEP 1 — DONE CUT
+━━━━━━━━━━━━━━━━━━
+
+When User A clicks:
+✅ Done Cut
+
+Bot replies ONLY to User A:
+
+📸 Sila hantar screenshot sebagai bukti anda telah cut link partner.
+
+Set state:
+awaiting_proof_upload
+
+IMPORTANT:
+- Do NOT show approve/reject buttons to User A
+- User A must NEVER be able to approve own proof
+
+━━━━━━━━━━━━━━━━━━
+STEP 2 — USER SENDS SCREENSHOT
+━━━━━━━━━━━━━━━━━━
+
+When User A uploads screenshot:
+
+Bot replies to User A:
+
+✅ Bukti berjaya dihantar.
+Tunggu partner anda semak bukti tersebut.
+
+NO BUTTONS HERE.
+
+━━━━━━━━━━━━━━━━━━
+STEP 3 — SEND PROOF TO PARTNER
+━━━━━━━━━━━━━━━━━━
+
+Automatically forward/send User A screenshot to User B.
+
+ONLY USER B sees these buttons:
+
+✅ Approve Proof
+❌ Reject Proof
+
+Caption:
+
+📸 Partner anda telah menghantar bukti cut.
+
+Sila semak bukti di bawah.
+
+━━━━━━━━━━━━━━━━━━
+STEP 4 — APPROVAL RULES
+━━━━━━━━━━━━━━━━━━
+
+If User B clicks:
+✅ Approve Proof
+
+Notify User A:
+
+✅ Partner anda telah approve bukti anda.
+
+If BOTH users:
+- submitted proof
+AND
+- approved partner proof
+
+THEN:
+- complete match
+- clear active match
+- reset states
+- unlock queue access again
+
+Send both:
+
+🎉 Swap selesai!
+Terima kasih kerana menggunakan CutSquad 🤝
+
+━━━━━━━━━━━━━━━━━━
+STEP 5 — REJECT RULE
+━━━━━━━━━━━━━━━━━━
+
+If User B clicks:
+❌ Reject Proof
+
+Then:
+1. Reject User A proof
+2. Cancel match
+3. Apply 24-hour cooldown to User A immediately
+4. User A cannot:
+   - join queue
+   - send links
+   - receive notifications
+
+Notify User A:
+
+❌ Bukti anda ditolak oleh partner.
+
+Akaun anda dikenakan cooldown selama 24 jam kerana gagal melengkapkan swap dengan betul.
+
+Notify User B:
+
+✅ Match dibatalkan.
+Terima kasih kerana membantu menjaga sistem CutSquad.
+
+━━━━━━━━━━━━━━━━━━
+IMPORTANT RULES
+━━━━━━━━━━━━━━━━━━
+
+1. User must NEVER see approve/reject buttons for their own proof
+2. Only partner can approve/reject
+3. Self-approval must be impossible
+4. Self-reject must be impossible
+5. Never allow callback press from wrong telegramId
+6. Verify callback owner before action
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add logs:
+- PROOF_SUBMITTED
+- PROOF_SENT_TO_PARTNER
+- PROOF_APPROVED
+- PROOF_REJECTED
+- USER_COOLDOWN_24H
+- SELF_APPROVAL_BLOCKED
+- INVALID_CALLBACK_BLOCKED
+
+━━━━━━━━━━━━━━━━━━
+AFTER CODING
+━━━━━━━━━━━━━━━━━━
+
+- Build project
+- Fix TypeScript errors if any
+- Commit and push to GitHub main

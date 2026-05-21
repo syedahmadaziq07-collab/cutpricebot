@@ -42360,7 +42360,7 @@ Status: ${statusMap[user.state] ?? user.state}`,
     }
     console.log(`[PROOF_SUBMITTED] telegramId=${telegramId} submitted proof for matchId=${matchId}.`);
     await User.updateOne({ telegramId }, { state: "awaiting_partner_approval" });
-    await ctx.reply("\u2705 Bukti anda telah dihantar.\nTunggu partner anda semak dan approve bukti tersebut.");
+    await ctx.reply("\u2705 Bukti berjaya dihantar.\nTunggu partner anda semak bukti tersebut.");
     const approveButtons = import_telegraf.Markup.inlineKeyboard([
       import_telegraf.Markup.button.callback("\u2705 Approve Proof", `approve_proof:${matchId}:${telegramId}`),
       import_telegraf.Markup.button.callback("\u274C Reject Proof", `reject_proof:${matchId}:${telegramId}`)
@@ -42368,10 +42368,11 @@ Status: ${statusMap[user.state] ?? user.state}`,
     await bot.telegram.sendPhoto(partnerId, proofFileId, {
       caption: `\u{1F4F8} *Partner anda telah menghantar bukti cut.*
 
-Sila semak bukti di bawah sebelum approve.`,
+Sila semak bukti di bawah.`,
       parse_mode: "Markdown",
       ...approveButtons
     });
+    console.log(`[PROOF_SENT_TO_PARTNER] telegramId=${telegramId} proof forwarded to partnerId=${partnerId} for matchId=${matchId}.`);
   });
   bot.on((0, import_filters.message)("text"), async (ctx) => {
     const telegramId = ctx.from.id;
@@ -42588,6 +42589,7 @@ ${refLink}`,
     const matchId = ctx.match[1];
     const proofOwnerId = parseInt(ctx.match[2], 10);
     if (telegramId === proofOwnerId) {
+      console.log(`[SELF_APPROVAL_BLOCKED] telegramId=${telegramId} tried to approve their own proof for matchId=${matchId}.`);
       await ctx.reply("\u274C Anda tidak boleh approve bukti anda sendiri.");
       return;
     }
@@ -42597,6 +42599,7 @@ ${refLink}`,
       return;
     }
     if (match.user1Id !== telegramId && match.user2Id !== telegramId) {
+      console.log(`[INVALID_CALLBACK_BLOCKED] telegramId=${telegramId} tried to approve proof for matchId=${matchId} but is not a participant.`);
       await ctx.reply("Anda bukan sebahagian daripada match ini.");
       return;
     }
@@ -42615,7 +42618,7 @@ ${refLink}`,
       await Match.updateOne({ _id: matchId }, { user2ProofApprovedByPartner: true });
     }
     console.log(`[PROOF_APPROVED] telegramId=${telegramId} approved proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
-    await bot.telegram.sendMessage(proofOwnerId, "\u2705 Bukti anda telah diapprove oleh partner.");
+    await bot.telegram.sendMessage(proofOwnerId, "\u2705 Partner anda telah approve bukti anda.");
     await checkAndCompleteMatch(bot, matchId);
   });
   bot.action(/^reject_proof:(.+):(\d+)$/, async (ctx) => {
@@ -42624,6 +42627,7 @@ ${refLink}`,
     const matchId = ctx.match[1];
     const proofOwnerId = parseInt(ctx.match[2], 10);
     if (telegramId === proofOwnerId) {
+      console.log(`[SELF_APPROVAL_BLOCKED] telegramId=${telegramId} tried to reject their own proof for matchId=${matchId}.`);
       await ctx.reply("\u274C Anda tidak boleh reject bukti anda sendiri.");
       return;
     }
@@ -42633,29 +42637,41 @@ ${refLink}`,
       return;
     }
     if (match.user1Id !== telegramId && match.user2Id !== telegramId) {
+      console.log(`[INVALID_CALLBACK_BLOCKED] telegramId=${telegramId} tried to reject proof for matchId=${matchId} but is not a participant.`);
       await ctx.reply("Anda bukan sebahagian daripada match ini.");
       return;
     }
-    const isProofOwnerUser1 = match.user1Id === proofOwnerId;
-    if (isProofOwnerUser1) {
-      await Match.updateOne({ _id: matchId }, {
-        user1ProofSubmitted: false,
-        user1ProofMessageId: null,
-        user1ProofSubmittedAt: null,
-        user1Confirmed: false
-      });
-    } else {
-      await Match.updateOne({ _id: matchId }, {
-        user2ProofSubmitted: false,
-        user2ProofMessageId: null,
-        user2ProofSubmittedAt: null,
-        user2Confirmed: false
-      });
+    await Match.updateOne({ _id: match._id }, { status: "cancelled" });
+    const timerId = match._id.toString();
+    const existingTimer = matchTimers.get(timerId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      matchTimers.delete(timerId);
     }
+    const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);
+    await User.updateOne(
+      { telegramId: proofOwnerId },
+      { state: "idle", isWaiting: false, queuedAt: null, pendingLink: null, cancelCooldownUntil: cooldownUntil }
+    );
+    await Queue.deleteOne({ telegramId: proofOwnerId });
     console.log(`[PROOF_REJECTED] telegramId=${telegramId} rejected proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
-    await User.updateOne({ telegramId: proofOwnerId }, { state: "awaiting_proof" });
-    await bot.telegram.sendMessage(proofOwnerId, "\u26A0\uFE0F Bukti anda ditolak oleh partner.\n\nSila hantar screenshot yang jelas.");
-    await ctx.reply("\u2705 Anda telah menolak bukti partner. Mereka akan menghantar semula.");
+    console.log(`[USER_COOLDOWN_24H] telegramId=${proofOwnerId} placed on 24h cooldown until ${cooldownUntil.toISOString()} due to proof rejection.`);
+    try {
+      await bot.telegram.sendMessage(
+        proofOwnerId,
+        "\u274C *Bukti anda ditolak oleh partner.*\n\nAkaun anda dikenakan cooldown selama 24 jam kerana gagal melengkapkan swap dengan betul.",
+        { parse_mode: "Markdown" }
+      );
+    } catch {
+    }
+    await ctx.reply("\u2705 *Match dibatalkan.*\nTerima kasih kerana membantu menjaga sistem CutSquad.", { parse_mode: "Markdown" });
+    const rejecter = await User.findOne({ telegramId });
+    if (rejecter?.pendingLink) {
+      console.log(`[PARTNER_REQUEUED] telegramId=${telegramId} re-entering queue after proof rejection.`);
+      await addToQueue(bot, telegramId, rejecter.pendingLink);
+    } else {
+      await User.updateOne({ telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+    }
   });
   bot.action("cut_more", async (ctx) => {
     await ctx.answerCbQuery();
