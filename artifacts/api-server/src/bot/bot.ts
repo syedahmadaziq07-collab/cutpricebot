@@ -173,8 +173,10 @@ async function handleMatchExpiry(
     if (!user || user.state !== "in_match") continue;
     await User.updateOne(
       { telegramId: uid },
-      { state: "awaiting_cut_link", pendingLink: null, queuedAt: null },
+      { state: "awaiting_cut_link", pendingLink: null, isWaiting: false, queuedAt: null },
     );
+    console.log(`[QUEUE_REMOVE] telegramId=${uid} removed from queue (match expired).`);
+    console.log(`[WAITING_CLEARED] isWaiting=false, queuedAt=null set for telegramId=${uid} (expiry).`);
     await bot.telegram.sendMessage(uid, expireMsg);
   }
 
@@ -258,13 +260,19 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
   await Promise.all([
     User.updateOne(
       { telegramId },
-      { state: "in_match", lastMatchPartnerId: partner.telegramId, queuedAt: null },
+      { state: "in_match", lastMatchPartnerId: partner.telegramId, isWaiting: false, queuedAt: null },
     ),
     User.updateOne(
       { telegramId: partner.telegramId },
-      { state: "in_match", lastMatchPartnerId: telegramId, queuedAt: null },
+      { state: "in_match", lastMatchPartnerId: telegramId, isWaiting: false, queuedAt: null },
     ),
   ]);
+
+  console.log(`[QUEUE_REMOVE] telegramId=${telegramId} (@${currentUser.tiktokUsername}) removed from queue.`);
+  console.log(`[QUEUE_REMOVE] telegramId=${partner.telegramId} (@${partner.tiktokUsername}) removed from queue.`);
+  console.log(`[WAITING_CLEARED] isWaiting=false, queuedAt=null set for telegramId=${telegramId}.`);
+  console.log(`[WAITING_CLEARED] isWaiting=false, queuedAt=null set for telegramId=${partner.telegramId}.`);
+  console.log(`[MATCH_SUCCESS] @${currentUser.tiktokUsername} <-> @${partner.tiktokUsername} matched successfully.`);
 
   const matchId = (match._id as { toString(): string }).toString();
 
@@ -626,10 +634,10 @@ export function createBot(): Telegraf {
       const now = new Date();
       await User.updateOne(
         { telegramId },
-        { state: "in_queue", pendingLink: text, queuedAt: now },
+        { state: "in_queue", pendingLink: text, isWaiting: true, queuedAt: now },
       );
 
-      console.log(`[QUEUE] telegramId=${telegramId} (@${user.tiktokUsername}) joined the queue at ${now.toISOString()}.`);
+      console.log(`[QUEUE] telegramId=${telegramId} (@${user.tiktokUsername}) joined the queue at ${now.toISOString()}. isWaiting=true`);
 
       await ctx.reply(
         "Secured! 🔒 Finding ur partner…\n\n_(Kau dalam queue — bot tengah cari match sekarang)_",

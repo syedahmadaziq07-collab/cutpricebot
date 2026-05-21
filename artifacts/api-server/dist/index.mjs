@@ -41597,6 +41597,7 @@ var userSchema = new mongoose2.Schema(
     suspendedUntil: { type: Date, default: null },
     isBanned: { type: Boolean, default: false },
     lastMatchPartnerId: { type: Number, default: null },
+    isWaiting: { type: Boolean, default: false },
     state: { type: String, default: "idle" },
     pendingLink: { type: String, default: null },
     lastNotifiedAt: { type: Date, default: null },
@@ -41757,8 +41758,10 @@ async function handleMatchExpiry(bot, matchId, user1Id, user2Id) {
     if (!user || user.state !== "in_match") continue;
     await User.updateOne(
       { telegramId: uid },
-      { state: "awaiting_cut_link", pendingLink: null, queuedAt: null }
+      { state: "awaiting_cut_link", pendingLink: null, isWaiting: false, queuedAt: null }
     );
+    console.log(`[QUEUE_REMOVE] telegramId=${uid} removed from queue (match expired).`);
+    console.log(`[WAITING_CLEARED] isWaiting=false, queuedAt=null set for telegramId=${uid} (expiry).`);
     await bot.telegram.sendMessage(uid, expireMsg);
   }
   matchTimers.delete(matchId);
@@ -41830,13 +41833,18 @@ async function tryMatch(bot, telegramId) {
   await Promise.all([
     User.updateOne(
       { telegramId },
-      { state: "in_match", lastMatchPartnerId: partner.telegramId, queuedAt: null }
+      { state: "in_match", lastMatchPartnerId: partner.telegramId, isWaiting: false, queuedAt: null }
     ),
     User.updateOne(
       { telegramId: partner.telegramId },
-      { state: "in_match", lastMatchPartnerId: telegramId, queuedAt: null }
+      { state: "in_match", lastMatchPartnerId: telegramId, isWaiting: false, queuedAt: null }
     )
   ]);
+  console.log(`[QUEUE_REMOVE] telegramId=${telegramId} (@${currentUser.tiktokUsername}) removed from queue.`);
+  console.log(`[QUEUE_REMOVE] telegramId=${partner.telegramId} (@${partner.tiktokUsername}) removed from queue.`);
+  console.log(`[WAITING_CLEARED] isWaiting=false, queuedAt=null set for telegramId=${telegramId}.`);
+  console.log(`[WAITING_CLEARED] isWaiting=false, queuedAt=null set for telegramId=${partner.telegramId}.`);
+  console.log(`[MATCH_SUCCESS] @${currentUser.tiktokUsername} <-> @${partner.tiktokUsername} matched successfully.`);
   const matchId = match._id.toString();
   const msgForCurrentUser = `\u2705 *Partner dijumpai!*
 
@@ -42195,9 +42203,9 @@ ${refLink}`,
       const now = /* @__PURE__ */ new Date();
       await User.updateOne(
         { telegramId },
-        { state: "in_queue", pendingLink: text, queuedAt: now }
+        { state: "in_queue", pendingLink: text, isWaiting: true, queuedAt: now }
       );
-      console.log(`[QUEUE] telegramId=${telegramId} (@${user.tiktokUsername}) joined the queue at ${now.toISOString()}.`);
+      console.log(`[QUEUE] telegramId=${telegramId} (@${user.tiktokUsername}) joined the queue at ${now.toISOString()}. isWaiting=true`);
       await ctx.reply(
         "Secured! \u{1F512} Finding ur partner\u2026\n\n_(Kau dalam queue \u2014 bot tengah cari match sekarang)_",
         { parse_mode: "Markdown" }
