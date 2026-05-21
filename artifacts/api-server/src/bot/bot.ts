@@ -222,10 +222,14 @@ async function handleMatchExpiry(
 
 async function hasCooldown(userIdA: number, userIdB: number): Promise<boolean> {
   const since = new Date(Date.now() - COOLDOWN_MS);
+  const pairKey = [userIdA, userIdB].sort((a, b) => a - b).join(":");
   const existing = await MatchHistory.findOne({
-    $or: [{ userIdA, userIdB }, { userIdA: userIdB, userIdB: userIdA }],
+    pairKey,
     matchedAt: { $gte: since },
   });
+  if (!existing) {
+    console.log(`[REMATCH_ALLOWED_AFTER_24H] pairKey=${pairKey} — no recent match found, pair is eligible.`);
+  }
   return existing !== null;
 }
 
@@ -274,16 +278,9 @@ async function tryMatch(bot: Telegraf): Promise<boolean> {
       // Check 24h cooldown between this pair
       const onCooldown = await hasCooldown(entryA.telegramId, entryB.telegramId);
       if (onCooldown) {
-        console.log(`[COOLDOWN] Pair telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId} matched within last 24h — removing both and notifying.`);
-        await Queue.deleteMany({ telegramId: { $in: [entryA.telegramId, entryB.telegramId] } });
-        await Promise.all([
-          User.updateOne({ telegramId: entryA.telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null }),
-          User.updateOne({ telegramId: entryB.telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null }),
-        ]);
-        const cooldownMsg = "⏳ Kau dah pernah swap dengan partner ni dalam 24 jam. Tunggu kejap atau submit link baru k!";
-        try { await bot.telegram.sendMessage(entryA.telegramId, cooldownMsg); } catch {}
-        try { await bot.telegram.sendMessage(entryB.telegramId, cooldownMsg); } catch {}
-        return tryMatch(bot);
+        console.log(`[RECENT_PAIR_BLOCKED] Pair telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId} matched within last 24h — skipping, trying next pair.`);
+        console.log(`[NEXT_PARTNER_SEARCH] Continuing search for other eligible partners...`);
+        continue;
       }
 
       console.log(`[MATCH_ATTEMPT] Eligible pair found: telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId}. Removing from queue...`);
@@ -330,11 +327,12 @@ async function tryMatch(bot: Telegraf): Promise<boolean> {
           link2: entryB.pendingLink,
           expiresAt,
         }),
-        MatchHistory.create({ userIdA: entryA.telegramId, userIdB: entryB.telegramId, matchedAt: now }),
+        MatchHistory.create({ userIdA: entryA.telegramId, userIdB: entryB.telegramId, pairKey: [entryA.telegramId, entryB.telegramId].sort((a, b) => a - b).join(":"), matchedAt: now }),
       ]);
 
       const matchId = (match._id as { toString(): string }).toString();
       console.log(`[MATCH_CREATED] matchId=${matchId} | userA=${entryA.telegramId} (@${userA?.tiktokUsername}) link="${entryA.pendingLink}" | userB=${entryB.telegramId} (@${userB?.tiktokUsername}) link="${entryB.pendingLink}"`);
+      console.log(`[MATCH_HISTORY_CREATED] pairKey=${[entryA.telegramId, entryB.telegramId].sort((a,b)=>a-b).join(":")} matchedAt=${now.toISOString()}`);
 
       const matchButtons = Markup.inlineKeyboard([
         Markup.button.callback("✅ Done Cut", "done_cut"),
@@ -598,6 +596,27 @@ export function createBot(): Telegraf {
 
     const reply = `🔍 *Queue Debug (${queueEntries.length} user(s)):*\n\n` + lines.join("\n\n");
     await ctx.reply(reply, { parse_mode: "Markdown" });
+  });
+
+  bot.command("debug_match_history", async (ctx) => {
+    const since = new Date(Date.now() - COOLDOWN_MS);
+    const history = await MatchHistory.find({ matchedAt: { $gte: since } }).sort({ matchedAt: -1 }).limit(20);
+    if (history.length === 0) {
+      await ctx.reply("✅ No match history in the last 24 hours.");
+      return;
+    }
+    const lines = await Promise.all(history.map(async (h, i) => {
+      const uA = await User.findOne({ telegramId: h.userIdA }).select("tiktokUsername");
+      const uB = await User.findOne({ telegramId: h.userIdB }).select("tiktokUsername");
+      const age = Math.round((Date.now() - h.matchedAt.getTime()) / (1000 * 60));
+      const resetIn = Math.round((COOLDOWN_MS - (Date.now() - h.matchedAt.getTime())) / (1000 * 60));
+      return (
+        `${i + 1}. @${uA?.tiktokUsername ?? h.userIdA} ↔️ @${uB?.tiktokUsername ?? h.userIdB}\n` +
+        `   pairKey: ${(h as any).pairKey ?? "N/A"}\n` +
+        `   matched: ${age} min ago | cooldown resets in: ${resetIn} min`
+      );
+    }));
+    await ctx.reply(`🕐 *Match History (last 24h):*\n\n` + lines.join("\n\n"), { parse_mode: "Markdown" });
   });
 
   bot.command("status", async (ctx) => {

@@ -3,12 +3,14 @@ import mongoose, { type Document } from "mongoose";
 export interface IMatchHistory extends Document {
   userIdA: number;
   userIdB: number;
+  pairKey: string;
   matchedAt: Date;
 }
 
 const matchHistorySchema = new mongoose.Schema<IMatchHistory>({
   userIdA: { type: Number, required: true },
   userIdB: { type: Number, required: true },
+  pairKey: { type: String, index: true },
   matchedAt: { type: Date, required: true, default: Date.now },
 });
 

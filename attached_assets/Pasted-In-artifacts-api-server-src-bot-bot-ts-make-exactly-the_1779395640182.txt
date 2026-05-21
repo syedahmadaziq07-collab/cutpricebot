@@ -1,0 +1,73 @@
+In artifacts/api-server/src/bot/bot.ts, make exactly these 3 changes:
+
+CHANGE 1 — Fix hasCooldown function (lines ~223-230)
+Replace the entire hasCooldown function with this:
+
+async function hasCooldown(userIdA: number, userIdB: number): Promise<boolean> {
+  const since = new Date(Date.now() - COOLDOWN_MS);
+  const pairKey = [userIdA, userIdB].sort((a, b) => a - b).join(":");
+  const existing = await MatchHistory.findOne({
+    pairKey,
+    matchedAt: { $gte: since },
+  });
+  if (!existing) {
+    console.log(`[REMATCH_ALLOWED_AFTER_24H] pairKey=${pairKey} — no recent match found, pair is eligible.`);
+  }
+  return existing !== null;
+}
+
+CHANGE 2 — Fix cooldown block inside tryMatch (lines ~274-287)
+Find this block inside tryMatch:
+
+      const onCooldown = await hasCooldown(entryA.telegramId, entryB.telegramId);
+      if (onCooldown) {
+        console.log(`[COOLDOWN] Pair telegramId=...
+
+Replace the entire if (onCooldown) block with this:
+
+      const onCooldown = await hasCooldown(entryA.telegramId, entryB.telegramId);
+      if (onCooldown) {
+        console.log(`[RECENT_PAIR_BLOCKED] Pair telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId} matched within last 24h — skipping, trying next pair.`);
+        console.log(`[NEXT_PARTNER_SEARCH] Continuing search for other eligible partners...`);
+        continue;
+      }
+
+CHANGE 3 — Add pairKey to MatchHistory.create inside tryMatch (lines ~325-334)
+Find:
+        MatchHistory.create({ userIdA: entryA.telegramId, userIdB: entryB.telegramId, matchedAt: now }),
+
+Replace with:
+        MatchHistory.create({ userIdA: entryA.telegramId, userIdB: entryB.telegramId, pairKey: [entryA.telegramId, entryB.telegramId].sort((a, b) => a - b).join(":"), matchedAt: now }),
+
+Add this log line immediately after Match.create and MatchHistory.create:
+        console.log(`[MATCH_HISTORY_CREATED] pairKey=${[entryA.telegramId, entryB.telegramId].sort((a,b)=>a-b).join(":")} matchedAt=${now.toISOString()}`);
+
+CHANGE 4 — Add /debug_match_history command
+Find:   bot.command("status", async (ctx) => {
+Add this entire block BEFORE it:
+
+  bot.command("debug_match_history", async (ctx) => {
+    const since = new Date(Date.now() - COOLDOWN_MS);
+    const history = await MatchHistory.find({ matchedAt: { $gte: since } }).sort({ matchedAt: -1 }).limit(20);
+    if (history.length === 0) {
+      await ctx.reply("✅ No match history in the last 24 hours.");
+      return;
+    }
+    const lines = await Promise.all(history.map(async (h, i) => {
+      const uA = await User.findOne({ telegramId: h.userIdA }).select("tiktokUsername");
+      const uB = await User.findOne({ telegramId: h.userIdB }).select("tiktokUsername");
+      const age = Math.round((Date.now() - h.matchedAt.getTime()) / (1000 * 60));
+      const resetIn = Math.round((COOLDOWN_MS - (Date.now() - h.matchedAt.getTime())) / (1000 * 60));
+      return (
+        ${i + 1}. @${uA?.tiktokUsername ?? h.userIdA} ↔️ @${uB?.tiktokUsername ?? h.userIdB}\n +
+           pairKey: ${(h as any).pairKey ?? "N/A"}\n +
+           matched: ${age} min ago | cooldown resets in: ${resetIn} min
+      );
+    }));
+    await ctx.reply(`🕐 *Match History (last 24h):*\n\n` + lines.join("\n\n"), { parse_mode: "Markdown" });
+  });
+
+Also check models/matchHistory.ts — add pairKey field if not exists:
+  pairKey: { type: String, index: true }
+
+After all changes: build the project, commit, and push to GitHub main
