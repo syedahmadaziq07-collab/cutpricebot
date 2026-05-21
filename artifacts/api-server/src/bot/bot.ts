@@ -731,6 +731,20 @@ export function createBot(): Telegraf {
         return;
       }
 
+      const activeMatch = await Match.findOne({
+        $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
+        status: "active",
+      });
+
+      if (activeMatch) {
+        console.log(`[ACTIVE_MATCH_BLOCKED_NEW_LINK] telegramId=${telegramId} (@${user.tiktokUsername}) tried to submit new link while match ${activeMatch._id} is still active.`);
+        await ctx.reply(
+          "⚠️ *Selesaikan swap semasa dahulu.*\n\nAnda hanya boleh cari partner baru selepas kedua-dua pihak approve bukti cut masing-masing.",
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
+
       const now = new Date();
       await User.updateOne(
         { telegramId },
