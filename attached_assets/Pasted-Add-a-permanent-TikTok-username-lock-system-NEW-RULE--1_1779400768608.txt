@@ -1,0 +1,115 @@
+Add a permanent TikTok username lock system.
+
+━━━━━━━━━━━━━━━━━━
+NEW RULE
+━━━━━━━━━━━━━━━━━━
+
+1 Telegram account can only register 1 TikTok username forever.
+
+Once a user registers a TikTok username:
+- lock that username to their Telegram account
+- user cannot change to another TikTok username
+- /start must not ask them to register again
+- sending a different TikTok profile link must be rejected
+
+━━━━━━━━━━━━━━━━━━
+DUPLICATE USERNAME RULE
+━━━━━━━━━━━━━━━━━━
+
+TikTok username must be unique.
+
+If another Telegram account tries to register a TikTok username already used by someone else, reject it.
+
+Message:
+
+Sorry 😵
+
+This TikTok username is already taken by another user.
+
+━━━━━━━━━━━━━━━━━━
+EXISTING DUPLICATE CLEANUP
+━━━━━━━━━━━━━━━━━━
+
+Before enabling the new lock system:
+
+1. Scan database for duplicate TikTok usernames.
+2. Keep ONLY the oldest/original owner of that username.
+3. All newer duplicate users must:
+   - have their TikTok username removed/reset
+   - be forced to register a different TikTok username again
+
+Reset affected users:
+- tiktokUsername = null
+- tiktokUsernameLocked = false
+
+When affected user opens /start:
+
+⚠️ Your previous TikTok username was removed because it conflicted with another account.
+
+Please register a new TikTok username to continue ✨
+
+━━━━━━━━━━━━━━━━━━
+USERNAME CHANGE BLOCK
+━━━━━━━━━━━━━━━━━━
+
+If existing user tries to send a different TikTok username than the one already locked:
+
+Message:
+
+Sorry 😭
+
+Your TikTok username is already locked to this account.
+
+Locked username: @{locked_tiktok_username}
+
+━━━━━━━━━━━━━━━━━━
+ALLOW SAME USERNAME
+━━━━━━━━━━━━━━━━━━
+
+If the same user sends link for their own locked TikTok username:
+- allow it as a cut link
+- continue normal queue/match flow
+
+━━━━━━━━━━━━━━━━━━
+DATABASE
+━━━━━━━━━━━━━━━━━━
+
+Add fields if needed:
+- tiktokUsername
+- tiktokUsernameLocked
+- tiktokLockedAt
+
+Add unique index for normalized TikTok username if safe.
+
+━━━━━━━━━━━━━━━━━━
+NORMALIZATION
+━━━━━━━━━━━━━━━━━━
+
+Normalize TikTok username before checking:
+- remove @
+- lowercase
+- trim spaces
+- remove query params
+
+Examples:
+@Syed.Son6
+syed.son6
+https://www.tiktok.com/@syed.son6?x=1
+
+All become:
+syed.son6
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add logs:
+- TIKTOK_USERNAME_LOCKED
+- TIKTOK_USERNAME_DUPLICATE_BLOCKED
+- TIKTOK_USERNAME_CHANGE_BLOCKED
+- DUPLICATE_USERNAME_CLEANUP
+- USERNAME_RESET_REQUIRED
+
+Build project after edits.
+Verify no TypeScript errors.
+Commit and push to GitHub main.

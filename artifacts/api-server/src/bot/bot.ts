@@ -57,6 +57,40 @@ export async function cleanupStaleQueue(): Promise<void> {
     }
   }
 
+  // Duplicate TikTok username cleanup — keep oldest owner, reset all newer duplicates
+  const allRegistered = await User.find({ tiktokUsername: { $nin: ["__pending__", ""] } })
+    .select("telegramId tiktokUsername createdAt")
+    .sort({ createdAt: 1 });
+
+  const seenUsernames = new Map<string, number>(); // normalized username → oldest owner's telegramId
+  const duplicateIds: number[] = [];
+
+  for (const u of allRegistered) {
+    const normalized = normalizeTikTokUsername(u.tiktokUsername);
+    if (seenUsernames.has(normalized)) {
+      duplicateIds.push(u.telegramId);
+    } else {
+      seenUsernames.set(normalized, u.telegramId);
+    }
+  }
+
+  if (duplicateIds.length > 0) {
+    await User.updateMany(
+      { telegramId: { $in: duplicateIds } },
+      { $set: { tiktokUsername: "__pending__", state: "awaiting_tiktok_profile", tiktokUsernameLocked: false, tiktokLockedAt: null, usernameConflictReset: true } },
+    );
+    console.log(`[DUPLICATE_USERNAME_CLEANUP] Reset ${duplicateIds.length} duplicate TikTok username user(s): ${duplicateIds.join(", ")}`);
+  }
+
+  // Backfill lock for all existing registered users who don't have one yet
+  const backfillResult = await User.updateMany(
+    { tiktokUsername: { $nin: ["__pending__", ""] }, tiktokUsernameLocked: false },
+    { $set: { tiktokUsernameLocked: true, tiktokLockedAt: new Date() } },
+  );
+  if (backfillResult.modifiedCount > 0) {
+    console.log(`[STARTUP_CLEANUP] Backfilled tiktokUsernameLocked=true for ${backfillResult.modifiedCount} existing user(s).`);
+  }
+
   // Log final queue state
   const remaining = await Queue.find().sort({ createdAt: 1 });
   console.log(`[STARTUP_CLEANUP] Queue after cleanup: ${remaining.length} user(s).`);
@@ -89,6 +123,10 @@ function extractTikTokUsername(input: string): string | null {
   );
   if (match && match[1]) return match[1];
   return null;
+}
+
+function normalizeTikTokUsername(username: string): string {
+  return username.toLowerCase().trim();
 }
 
 function isValidTikTokLink(url: string): boolean {
@@ -664,6 +702,17 @@ export function createBot(): Telegraf {
       // Clear any stale Queue entry before resetting state
       await Queue.deleteOne({ telegramId });
       await User.updateOne({ telegramId }, { state: "awaiting_cut_link" });
+      return;
+    }
+
+    // Conflict-reset users: their username was removed due to a duplicate — prompt them to register a new one
+    if (existingUser && existingUser.tiktokUsername === "__pending__" && existingUser.usernameConflictReset) {
+      console.log(`[USERNAME_RESET_REQUIRED] telegramId=${telegramId} — prompted to re-register after conflict reset.`);
+      await User.updateOne({ telegramId }, { usernameConflictReset: false, state: "awaiting_tiktok_profile" });
+      await ctx.reply(
+        "⚠️ Your previous TikTok username was removed because it conflicted with another account.\n\nPlease register a new TikTok username to continue ✨\n\n_(Send your TikTok profile link, e.g. https://www.tiktok.com/@username)_",
+        { parse_mode: "Markdown" },
+      );
       return;
     }
 
@@ -1276,10 +1325,22 @@ export function createBot(): Telegraf {
     if (!user || user.tiktokUsername === "__pending__") {
       if (user?.state === "awaiting_tiktok_profile") {
         console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
-        const username = extractTikTokUsername(text);
-        if (!username) {
+        const rawUsername = extractTikTokUsername(text);
+        if (!rawUsername) {
           console.warn(`[TIKTOK] Username extraction failed for telegramId=${telegramId}, input="${text.slice(0, 100)}"`);
           await ctx.reply("Hmm link tu tak valid la 😕\nHantar betul2 k — contoh:\nhttps://www.tiktok.com/@username");
+          return;
+        }
+        const username = normalizeTikTokUsername(rawUsername);
+
+        // Check for duplicate — reject if taken by another account
+        const existingOwner = await User.findOne({
+          tiktokUsername: { $regex: new RegExp(`^${username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
+          telegramId: { $ne: telegramId },
+        });
+        if (existingOwner) {
+          console.log(`[TIKTOK_USERNAME_DUPLICATE_BLOCKED] telegramId=${telegramId} tried to register "@${username}" — already owned by telegramId=${existingOwner.telegramId}.`);
+          await ctx.reply("Sorry 😵\n\nThis TikTok username is already taken by another user.");
           return;
         }
 
@@ -1288,8 +1349,9 @@ export function createBot(): Telegraf {
 
         await User.updateOne(
           { telegramId },
-          { tiktokUsername: username, tiktokProfileLink: text, telegramUsername: ctx.from.username ?? "", state: "awaiting_cut_link" },
+          { tiktokUsername: username, tiktokProfileLink: text, telegramUsername: ctx.from.username ?? "", state: "awaiting_cut_link", tiktokUsernameLocked: true, tiktokLockedAt: new Date() },
         );
+        console.log(`[TIKTOK_USERNAME_LOCKED] telegramId=${telegramId} permanently locked to "@${username}".`);
 
         if (pendingRef) {
           const referrer = await User.findOne({ referralCode: pendingRef });
@@ -1322,14 +1384,44 @@ export function createBot(): Telegraf {
 
     if (user.state === "awaiting_tiktok_profile") {
       console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
-      const username = extractTikTokUsername(text);
-      if (!username) {
+
+      // If this user already has a locked username, block any change attempt
+      if (user.tiktokUsernameLocked && user.tiktokUsername && user.tiktokUsername !== "__pending__") {
+        const rawAttempt = extractTikTokUsername(text);
+        const attempt = rawAttempt ? normalizeTikTokUsername(rawAttempt) : null;
+        if (attempt && attempt === normalizeTikTokUsername(user.tiktokUsername)) {
+          // Same username — just restore state
+          await User.updateOne({ telegramId }, { state: "awaiting_cut_link" });
+          await ctx.reply(`✅ TikTok username @${user.tiktokUsername} confirmed!\n\nNow send your cut price link to start swapping 🔗✨`);
+        } else {
+          console.log(`[TIKTOK_USERNAME_CHANGE_BLOCKED] telegramId=${telegramId} tried to change from "@${user.tiktokUsername}" to "${attempt ?? text.slice(0, 50)}".`);
+          await ctx.reply(`Sorry 😭\n\nYour TikTok username is already locked to this account.\n\nLocked username: @${user.tiktokUsername}`);
+        }
+        return;
+      }
+
+      const rawUsername = extractTikTokUsername(text);
+      if (!rawUsername) {
         console.warn(`[TIKTOK] Username extraction failed for telegramId=${telegramId}, input="${text.slice(0, 100)}"`);
         await ctx.reply("Link tu pelik sikit 😕\nHantar link profile TikTok betul k — contoh:\nhttps://www.tiktok.com/@username");
         return;
       }
-      await User.updateOne({ telegramId }, { tiktokUsername: username, tiktokProfileLink: text, state: "awaiting_cut_link" });
-      await ctx.reply(`Welcome @${username}! ✅\n\nSekarang hantar TikTok cut price link kau 👇`);
+      const username = normalizeTikTokUsername(rawUsername);
+
+      // Check for duplicate — reject if taken by another account
+      const existingOwner = await User.findOne({
+        tiktokUsername: { $regex: new RegExp(`^${username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
+        telegramId: { $ne: telegramId },
+      });
+      if (existingOwner) {
+        console.log(`[TIKTOK_USERNAME_DUPLICATE_BLOCKED] telegramId=${telegramId} tried to register "@${username}" — already owned by telegramId=${existingOwner.telegramId}.`);
+        await ctx.reply("Sorry 😵\n\nThis TikTok username is already taken by another user.");
+        return;
+      }
+
+      await User.updateOne({ telegramId }, { tiktokUsername: username, tiktokProfileLink: text, state: "awaiting_cut_link", tiktokUsernameLocked: true, tiktokLockedAt: new Date() });
+      console.log(`[TIKTOK_USERNAME_LOCKED] telegramId=${telegramId} permanently locked to "@${username}".`);
+      await ctx.reply(`Welcome @${username}! ✅\n\nNow send your TikTok cut price link to start swapping 🔗✨`);
       return;
     }
 

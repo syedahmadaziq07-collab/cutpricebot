@@ -31,6 +31,9 @@ export interface IUser extends Document {
   weeklyRejectWindowCount: number;
   noResponseStrikeCount: number;
   noResponseStrikeWindowStart: Date | null;
+  tiktokUsernameLocked: boolean;
+  tiktokLockedAt: Date | null;
+  usernameConflictReset: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -67,6 +70,9 @@ const userSchema = new mongoose.Schema<IUser>(
     weeklyRejectWindowCount: { type: Number, default: 0 },
     noResponseStrikeCount: { type: Number, default: 0 },
     noResponseStrikeWindowStart: { type: Date, default: null },
+    tiktokUsernameLocked: { type: Boolean, default: false },
+    tiktokLockedAt: { type: Date, default: null },
+    usernameConflictReset: { type: Boolean, default: false },
   },
   { timestamps: true },
 );
