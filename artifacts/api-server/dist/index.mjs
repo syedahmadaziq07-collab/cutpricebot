@@ -42128,13 +42128,35 @@ function createBot() {
         await ctx.reply(sus.message);
         return;
       }
+      const firstName = ctx.from.first_name ?? "there";
+      const tgUsername = existingUser.telegramUsername || ctx.from.username || "unknown";
+      const now = /* @__PURE__ */ new Date();
+      const updatedTime = now.toUTCString().replace("GMT", "UTC");
+      const queueCount = await Queue.countDocuments();
+      const activeMatchCount = await User.countDocuments({
+        state: { $in: ["in_match", "awaiting_proof", "awaiting_partner_approval"] }
+      });
+      const activeNow = queueCount + activeMatchCount;
       await ctx.reply(
-        `Eh, kau dah register la @${existingUser.tiktokUsername}! \u{1F44B}
+        `Welcome to CutPricebot!!!
+Updated: ${updatedTime}
 
-Cut baki: *${existingUser.cutBalance}*
+\u{1F44B} Hi ${firstName}!
 
-Hantar TikTok cut price link untuk mula! \u{1F517}`,
-        { parse_mode: "Markdown" }
+\u{1F464} Account
+\u2022 ID: ${telegramId}
+\u2022 Username: @${tgUsername}
+
+\u{1F4CA} Store Stats
+\u2022 Total Active Now: ${activeNow}
+
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+
+Ayy @${existingUser.tiktokUsername} is back again \u{1F606}
+
+\u{1F39F} Remaining cuts: ${existingUser.cutBalance}
+
+Drop your TikTok cut price link below to start swapping \u{1F517}\u2728`
       );
       await Queue.deleteOne({ telegramId });
       await User.updateOne({ telegramId }, { state: "awaiting_cut_link" });

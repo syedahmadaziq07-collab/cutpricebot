@@ -530,9 +530,31 @@ export function createBot(): Telegraf {
     if (existingUser && existingUser.tiktokUsername && existingUser.tiktokUsername !== "__pending__") {
       const sus = await checkSuspension(telegramId);
       if (sus.suspended) { await ctx.reply(sus.message); return; }
+
+      const firstName = ctx.from.first_name ?? "there";
+      const tgUsername = existingUser.telegramUsername || ctx.from.username || "unknown";
+
+      const now = new Date();
+      const updatedTime = now.toUTCString().replace("GMT", "UTC");
+
+      const queueCount = await Queue.countDocuments();
+      const activeMatchCount = await User.countDocuments({
+        state: { $in: ["in_match", "awaiting_proof", "awaiting_partner_approval"] },
+      });
+      const activeNow = queueCount + activeMatchCount;
+
       await ctx.reply(
-        `Eh, kau dah register la @${existingUser.tiktokUsername}! 👋\n\nCut baki: *${existingUser.cutBalance}*\n\nHantar TikTok cut price link untuk mula! 🔗`,
-        { parse_mode: "Markdown" },
+        `Welcome to CutPricebot!!!\nUpdated: ${updatedTime}\n\n` +
+        `👋 Hi ${firstName}!\n\n` +
+        `👤 Account\n` +
+        `• ID: ${telegramId}\n` +
+        `• Username: @${tgUsername}\n\n` +
+        `📊 Store Stats\n` +
+        `• Total Active Now: ${activeNow}\n\n` +
+        `━━━━━━━━━━━━━━━\n\n` +
+        `Ayy @${existingUser.tiktokUsername} is back again 😆\n\n` +
+        `🎟 Remaining cuts: ${existingUser.cutBalance}\n\n` +
+        `Drop your TikTok cut price link below to start swapping 🔗✨`,
       );
       // Clear any stale Queue entry before resetting state
       await Queue.deleteOne({ telegramId });
