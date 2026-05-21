@@ -41623,7 +41623,15 @@ var matchSchema = new mongoose3.Schema(
     },
     user1Confirmed: { type: Boolean, default: false },
     user2Confirmed: { type: Boolean, default: false },
-    expiresAt: { type: Date, required: true }
+    expiresAt: { type: Date, required: true },
+    user1ProofSubmitted: { type: Boolean, default: false },
+    user1ProofApprovedByPartner: { type: Boolean, default: false },
+    user1ProofMessageId: { type: String, default: null },
+    user1ProofSubmittedAt: { type: Date, default: null },
+    user2ProofSubmitted: { type: Boolean, default: false },
+    user2ProofApprovedByPartner: { type: Boolean, default: false },
+    user2ProofMessageId: { type: String, default: null },
+    user2ProofSubmittedAt: { type: Date, default: null }
   },
   { timestamps: true }
 );
@@ -41763,7 +41771,9 @@ async function handleMatchExpiry(bot, matchId, user1Id, user2Id) {
   const expireMsg = "\u23F0 4 minit dah habis! Partner tak respond.\n\nSubmit link baru untuk rematch k \u{1F447}";
   for (const uid of [user1Id, user2Id]) {
     const user = await User.findOne({ telegramId: uid });
-    if (!user || user.state !== "in_match") continue;
+    if (!user) continue;
+    const activeStates = ["in_match", "awaiting_proof", "awaiting_partner_approval"];
+    if (!activeStates.includes(user.state)) continue;
     await User.updateOne(
       { telegramId: uid },
       { state: "awaiting_cut_link", pendingLink: null, isWaiting: false, queuedAt: null }
@@ -41885,53 +41895,44 @@ Sila cut link partner anda dahulu \u{1F91D}`;
   }, 4 * 60 * 1e3);
   matchTimers.set(matchId, timer);
 }
-async function confirmSwap(bot, telegramId) {
-  const user = await User.findOne({ telegramId });
-  if (!user || user.state !== "awaiting_proof") return;
-  const match = await Match.findOne({
-    $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
-    status: "active"
-  });
-  if (!match) {
-    await bot.telegram.sendMessage(
-      telegramId,
-      "Hmm takde match active la. Cuba /start balik k."
+async function checkAndCompleteMatch(bot, matchId) {
+  const match = await Match.findById(matchId);
+  if (!match || match.status !== "active") return;
+  const bothSubmitted = match.user1ProofSubmitted && match.user2ProofSubmitted;
+  const bothApproved = match.user1ProofApprovedByPartner && match.user2ProofApprovedByPartner;
+  if (!bothSubmitted || !bothApproved) return;
+  const timerId = match._id.toString();
+  const existingTimer = matchTimers.get(timerId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    matchTimers.delete(timerId);
+  }
+  await Match.updateOne({ _id: matchId }, { status: "completed" });
+  console.log(`[MATCH_COMPLETED] matchId=${matchId} \u2014 both proofs submitted and approved.`);
+  for (const uid of [match.user1Id, match.user2Id]) {
+    const user = await User.findOne({ telegramId: uid });
+    if (!user) continue;
+    const newBalance = Math.max(0, user.cutBalance - 1);
+    await User.updateOne(
+      { telegramId: uid },
+      {
+        state: "awaiting_cut_link",
+        cutBalance: newBalance,
+        pendingLink: null,
+        queuedAt: null,
+        isWaiting: false
+      }
     );
-    return;
-  }
-  const isUser1 = match.user1Id === telegramId;
-  const partnerId = isUser1 ? match.user2Id : match.user1Id;
-  if (isUser1) {
-    await Match.updateOne({ _id: match._id }, { user1Confirmed: true });
-  } else {
-    await Match.updateOne({ _id: match._id }, { user2Confirmed: true });
-  }
-  const updatedMatch = await Match.findById(match._id);
-  if (!updatedMatch) return;
-  await bot.telegram.sendMessage(
-    telegramId,
-    "Bukti diterima \u2705\nTunggu partner anda complete juga."
-  );
-  console.log(`[PROOF_SUBMITTED] telegramId=${telegramId} submitted proof for matchId=${match._id}.`);
-  const newBalance = Math.max(0, user.cutBalance - 1);
-  await User.updateOne(
-    { telegramId },
-    { state: "awaiting_cut_link", cutBalance: newBalance, pendingLink: null, queuedAt: null, isWaiting: false }
-  );
-  const partner = await User.findOne({ telegramId: partnerId });
-  if (updatedMatch.user1Confirmed && updatedMatch.user2Confirmed) {
-    const timerId = match._id.toString();
-    const existingTimer = matchTimers.get(timerId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      matchTimers.delete(timerId);
-    }
-    await Match.updateOne({ _id: match._id }, { status: "completed" });
     if (newBalance === 0) {
-      const refLink = `https://t.me/${(await bot.telegram.getMe()).username}?start=ref_${user.referralCode}`;
+      const me = await bot.telegram.getMe();
+      const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
       await bot.telegram.sendMessage(
-        telegramId,
-        `\u2705 *Swap selesai!* Cut baki: *0/16* \u{1F62E}
+        uid,
+        `\u{1F389} *Swap selesai!*
+
+Terima kasih kerana menggunakan CutSquad \u{1F91D}
+
+Cut baki: *0/16* \u{1F62E}
 
 Kau dah habis semua cuts!
 
@@ -41942,20 +41943,18 @@ ${refLink}`,
       );
     } else {
       await bot.telegram.sendMessage(
-        telegramId,
-        `\u2705 *Swap selesai!* Cut baki: *${newBalance}/16* \u{1F389}`,
+        uid,
+        `\u{1F389} *Swap selesai!*
+
+Terima kasih kerana menggunakan CutSquad \u{1F91D}
+
+Cut baki: *${newBalance}/16*`,
         {
           parse_mode: "Markdown",
           ...import_telegraf.Markup.inlineKeyboard([import_telegraf.Markup.button.callback("\u{1F501} Cut Lagi!", "cut_more")])
         }
       );
     }
-  }
-  if (partner && (partner.state === "in_match" || partner.state === "awaiting_proof")) {
-    await bot.telegram.sendMessage(
-      partnerId,
-      "\u{1F4F8} Partner anda telah menghantar bukti. Sila hantar screenshot anda juga untuk melengkapkan swap."
-    );
   }
 }
 function createBot() {
@@ -42060,7 +42059,8 @@ Share ni \u2014 setiap kawan yang join = *+3 cuts* untuk kau!`,
       awaiting_cut_link: "\u23F3 Tunggu link",
       in_queue: "\u{1F50D} Cari partner...",
       in_match: "\u{1F91D} In match",
-      awaiting_proof: "\u{1F4F8} Menunggu bukti"
+      awaiting_proof: "\u{1F4F8} Menunggu bukti",
+      awaiting_partner_approval: "\u23F3 Menunggu kelulusan partner"
     };
     await ctx.reply(
       `\u{1F4CA} *Status kau:*
@@ -42092,14 +42092,86 @@ Status: ${statusMap[user.state] ?? user.state}`,
       );
       return;
     }
+    if (user.state === "awaiting_partner_approval") {
+      await ctx.reply(
+        "\u23F3 Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu."
+      );
+      return;
+    }
     if (user.state !== "awaiting_proof") {
       await ctx.reply(
         "Tiada match aktif. Hantar link TikTok anda dahulu untuk mula."
       );
       return;
     }
-    await ctx.reply("\u{1F50D} Memeriksa bukti anda...");
-    await confirmSwap(bot, telegramId);
+    const match = await Match.findOne({
+      $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
+      status: "active"
+    });
+    if (!match) {
+      await ctx.reply("Hmm takde match active la. Cuba /start balik k.");
+      return;
+    }
+    const isUser1 = match.user1Id === telegramId;
+    const partnerId = isUser1 ? match.user2Id : match.user1Id;
+    const matchId = match._id.toString();
+    const alreadySubmitted = isUser1 ? match.user1ProofSubmitted : match.user2ProofSubmitted;
+    if (alreadySubmitted) {
+      await ctx.reply(
+        "\u23F3 Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu."
+      );
+      return;
+    }
+    const photos = ctx.message.photo;
+    const photo = photos[photos.length - 1];
+    if (!photo) {
+      await ctx.reply("Gambar tidak diterima. Sila cuba semula.");
+      return;
+    }
+    const proofMessageId = ctx.message.message_id.toString();
+    const proofFileId = photo.file_id;
+    const now = /* @__PURE__ */ new Date();
+    if (isUser1) {
+      await Match.updateOne(
+        { _id: match._id },
+        {
+          user1ProofSubmitted: true,
+          user1ProofMessageId: proofMessageId,
+          user1ProofSubmittedAt: now,
+          user1Confirmed: true
+        }
+      );
+    } else {
+      await Match.updateOne(
+        { _id: match._id },
+        {
+          user2ProofSubmitted: true,
+          user2ProofMessageId: proofMessageId,
+          user2ProofSubmittedAt: now,
+          user2Confirmed: true
+        }
+      );
+    }
+    console.log(`[PROOF_SUBMITTED] telegramId=${telegramId} submitted proof for matchId=${matchId}.`);
+    await User.updateOne({ telegramId }, { state: "awaiting_partner_approval" });
+    await ctx.reply(
+      "\u2705 Bukti anda telah dihantar.\nTunggu partner anda semak dan approve bukti tersebut."
+    );
+    const approveButtons = import_telegraf.Markup.inlineKeyboard([
+      import_telegraf.Markup.button.callback("\u2705 Approve Proof", `approve_proof:${matchId}:${telegramId}`),
+      import_telegraf.Markup.button.callback("\u274C Reject Proof", `reject_proof:${matchId}:${telegramId}`)
+    ]);
+    await bot.telegram.sendPhoto(
+      partnerId,
+      proofFileId,
+      {
+        caption: `\u{1F4F8} *Partner anda telah menghantar bukti cut.*
+
+Sila semak bukti di bawah sebelum approve.`,
+        parse_mode: "Markdown",
+        ...approveButtons
+      }
+    );
   });
   bot.on((0, import_filters.message)("text"), async (ctx) => {
     const telegramId = ctx.from.id;
@@ -42269,6 +42341,12 @@ ${refLink}`,
       );
       return;
     }
+    if (user.state === "awaiting_partner_approval") {
+      await ctx.reply(
+        "\u23F3 Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu."
+      );
+      return;
+    }
     await ctx.reply(
       "Taip /start untuk mula atau /status untuk semak status anda."
     );
@@ -42340,6 +42418,97 @@ ${refLink}`,
         await tryMatch(bot, partnerId);
       }
     }
+  });
+  bot.action(/^approve_proof:(.+):(\d+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const telegramId = ctx.from.id;
+    const matchId = ctx.match[1];
+    const proofOwnerId = parseInt(ctx.match[2], 10);
+    if (telegramId === proofOwnerId) {
+      await ctx.reply("\u274C Anda tidak boleh approve bukti anda sendiri.");
+      return;
+    }
+    const match = await Match.findById(matchId);
+    if (!match || match.status !== "active") {
+      await ctx.reply("Match ini tidak lagi aktif.");
+      return;
+    }
+    const isApproverUser1 = match.user1Id === telegramId;
+    const isApproverUser2 = match.user2Id === telegramId;
+    if (!isApproverUser1 && !isApproverUser2) {
+      await ctx.reply("Anda bukan sebahagian daripada match ini.");
+      return;
+    }
+    const isProofOwnerUser1 = match.user1Id === proofOwnerId;
+    if (isProofOwnerUser1) {
+      if (match.user1ProofApprovedByPartner) {
+        await ctx.reply("Bukti ini sudah diapprove sebelum ini.");
+        return;
+      }
+      await Match.updateOne({ _id: matchId }, { user1ProofApprovedByPartner: true });
+    } else {
+      if (match.user2ProofApprovedByPartner) {
+        await ctx.reply("Bukti ini sudah diapprove sebelum ini.");
+        return;
+      }
+      await Match.updateOne({ _id: matchId }, { user2ProofApprovedByPartner: true });
+    }
+    console.log(`[PROOF_APPROVED] telegramId=${telegramId} approved proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
+    await bot.telegram.sendMessage(
+      proofOwnerId,
+      "\u2705 Bukti anda telah diapprove oleh partner."
+    );
+    await checkAndCompleteMatch(bot, matchId);
+  });
+  bot.action(/^reject_proof:(.+):(\d+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const telegramId = ctx.from.id;
+    const matchId = ctx.match[1];
+    const proofOwnerId = parseInt(ctx.match[2], 10);
+    if (telegramId === proofOwnerId) {
+      await ctx.reply("\u274C Anda tidak boleh reject bukti anda sendiri.");
+      return;
+    }
+    const match = await Match.findById(matchId);
+    if (!match || match.status !== "active") {
+      await ctx.reply("Match ini tidak lagi aktif.");
+      return;
+    }
+    const isApproverUser1 = match.user1Id === telegramId;
+    const isApproverUser2 = match.user2Id === telegramId;
+    if (!isApproverUser1 && !isApproverUser2) {
+      await ctx.reply("Anda bukan sebahagian daripada match ini.");
+      return;
+    }
+    const isProofOwnerUser1 = match.user1Id === proofOwnerId;
+    if (isProofOwnerUser1) {
+      await Match.updateOne(
+        { _id: matchId },
+        {
+          user1ProofSubmitted: false,
+          user1ProofMessageId: null,
+          user1ProofSubmittedAt: null,
+          user1Confirmed: false
+        }
+      );
+    } else {
+      await Match.updateOne(
+        { _id: matchId },
+        {
+          user2ProofSubmitted: false,
+          user2ProofMessageId: null,
+          user2ProofSubmittedAt: null,
+          user2Confirmed: false
+        }
+      );
+    }
+    console.log(`[PROOF_REJECTED] telegramId=${telegramId} rejected proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
+    await User.updateOne({ telegramId: proofOwnerId }, { state: "awaiting_proof" });
+    await bot.telegram.sendMessage(
+      proofOwnerId,
+      "\u26A0\uFE0F Bukti anda ditolak oleh partner.\n\nSila hantar screenshot yang jelas."
+    );
+    await ctx.reply("\u2705 Anda telah menolak bukti partner. Mereka akan menghantar semula.");
   });
   bot.action("cut_more", async (ctx) => {
     await ctx.answerCbQuery();

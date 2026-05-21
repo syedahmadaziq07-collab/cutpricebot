@@ -11,6 +11,16 @@ export interface IMatch extends Document {
   expiresAt: Date;
   createdAt: Date;
   updatedAt: Date;
+
+  user1ProofSubmitted: boolean;
+  user1ProofApprovedByPartner: boolean;
+  user1ProofMessageId: string | null;
+  user1ProofSubmittedAt: Date | null;
+
+  user2ProofSubmitted: boolean;
+  user2ProofApprovedByPartner: boolean;
+  user2ProofMessageId: string | null;
+  user2ProofSubmittedAt: Date | null;
 }
 
 const matchSchema = new mongoose.Schema<IMatch>(
@@ -27,6 +37,16 @@ const matchSchema = new mongoose.Schema<IMatch>(
     user1Confirmed: { type: Boolean, default: false },
     user2Confirmed: { type: Boolean, default: false },
     expiresAt: { type: Date, required: true },
+
+    user1ProofSubmitted: { type: Boolean, default: false },
+    user1ProofApprovedByPartner: { type: Boolean, default: false },
+    user1ProofMessageId: { type: String, default: null },
+    user1ProofSubmittedAt: { type: Date, default: null },
+
+    user2ProofSubmitted: { type: Boolean, default: false },
+    user2ProofApprovedByPartner: { type: Boolean, default: false },
+    user2ProofMessageId: { type: String, default: null },
+    user2ProofSubmittedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

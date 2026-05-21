@@ -1,0 +1,135 @@
+Refactor proof verification flow to require BOTH users to approve each other's screenshot proof before match is completed.
+
+━━━━━━━━━━━━━━━━━━
+NEW FLOW
+━━━━━━━━━━━━━━━━━━
+
+1. Match found
+Show buttons:
+
+✅ Done Cut
+❌ Cancel Match (24h cooldown)
+
+━━━━━━━━━━━━━━━━━━
+STEP 1 — USER SEND PROOF
+━━━━━━━━━━━━━━━━━━
+
+When user clicks ✅ Done Cut:
+- bot asks for screenshot proof
+- set state: awaiting_proof_upload
+
+After screenshot uploaded:
+- save proof image/message_id
+- set proofSubmitted = true
+- DO NOT complete match yet
+
+Bot reply to sender:
+
+✅ Bukti anda telah dihantar.
+Tunggu partner anda semak dan approve bukti tersebut.
+
+━━━━━━━━━━━━━━━━━━
+STEP 2 — SEND PROOF TO PARTNER
+━━━━━━━━━━━━━━━━━━
+
+Forward/send the screenshot proof to the partner automatically.
+
+Caption:
+
+📸 Partner anda telah menghantar bukti cut.
+
+Sila semak bukti di bawah sebelum approve.
+
+Show buttons:
+
+✅ Approve Proof
+❌ Reject Proof
+
+━━━━━━━━━━━━━━━━━━
+STEP 3 — APPROVE SYSTEM
+━━━━━━━━━━━━━━━━━━
+
+If partner clicks ✅ Approve Proof:
+- set approvedByPartner = true
+
+Notify proof sender:
+
+✅ Bukti anda telah diapprove oleh partner.
+
+If BOTH users have:
+- submitted proof
+AND
+- approved each other's proof
+
+THEN:
+- complete the match
+- clear states
+- clear queue
+- clear active match
+
+Send both users:
+
+🎉 Swap selesai!
+
+Terima kasih kerana menggunakan CutSquad 🤝
+
+━━━━━━━━━━━━━━━━━━
+STEP 4 — REJECT SYSTEM
+━━━━━━━━━━━━━━━━━━
+
+If partner clicks ❌ Reject Proof:
+
+Notify proof sender:
+
+⚠️ Bukti anda ditolak oleh partner.
+
+Sila hantar screenshot yang jelas.
+
+Reset sender state back to:
+awaiting_proof_upload
+
+DO NOT end match.
+
+━━━━━━━━━━━━━━━━━━
+ANTI-ABUSE RULES
+━━━━━━━━━━━━━━━━━━
+
+1. User cannot approve their own proof
+2. User cannot spam approve/reject
+3. User cannot upload multiple proofs rapidly
+4. Match only completes when BOTH approvals exist
+5. Store timestamps for:
+- proof submitted
+- proof approved
+
+━━━━━━━━━━━━━━━━━━
+DATABASE
+━━━━━━━━━━━━━━━━━━
+
+Add fields:
+
+proofSubmitted
+proofApprovedByPartner
+proofMessageId
+proofSubmittedAt
+
+for both users/match records.
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add logs:
+- PROOF_SUBMITTED
+- PROOF_APPROVED
+- PROOF_REJECTED
+- MATCH_COMPLETED
+
+━━━━━━━━━━━━━━━━━━
+IMPORTANT
+━━━━━━━━━━━━━━━━━━
+
+Keep all text in clean professional Bahasa Malaysia.
+Do not break existing queue/match system.
+Build project after edits.
+Commit and push all fixes to GitHub main.
