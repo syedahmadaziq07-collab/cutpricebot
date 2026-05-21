@@ -14,8 +14,11 @@ async function main() {
   await connectDB();
 
   const bot = createBot();
+  console.log("Clearing any existing Telegram webhook...");
+  await bot.telegram.deleteWebhook({ drop_pending_updates: false });
+  console.log("Webhook cleared. Starting polling...");
   await bot.launch();
-  console.log("Bot is running with polling");
+  console.log("Bot is running with polling 🟢");
   logger.info("CutSquad bot launched ✅");
 
   process.once("SIGINT", () => bot.stop("SIGINT"));

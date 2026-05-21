@@ -41538,13 +41538,7 @@ var logger = (0, import_pino.default)({
     "req.headers.authorization",
     "req.headers.cookie",
     "res.headers['set-cookie']"
-  ],
-  ...isProduction ? {} : {
-    transport: {
-      target: "pino-pretty",
-      options: { colorize: true }
-    }
-  }
+  ]
 });
 
 // src/app.ts
@@ -41579,7 +41573,9 @@ import mongoose from "mongoose";
 async function connectDB() {
   const uri = process.env["MONGODB_URI"];
   if (!uri) throw new Error("MONGODB_URI is required");
-  await mongoose.connect(uri);
+  console.log("Connecting to MongoDB...");
+  await mongoose.connect(uri, { serverSelectionTimeoutMS: 10000 });
+  console.log("MongoDB connected \u2705");
   logger.info("MongoDB connected");
 }
 
@@ -42154,8 +42150,11 @@ if (port !== null && (Number.isNaN(port) || port <= 0)) {
 async function main() {
   await connectDB();
   const bot = createBot();
+  console.log("Clearing any existing Telegram webhook...");
+  await bot.telegram.deleteWebhook({ drop_pending_updates: false });
+  console.log("Webhook cleared. Starting polling...");
   await bot.launch();
-  console.log("Bot is running with polling");
+  console.log("Bot is running with polling \u{1F7E2}");
   logger.info("CutSquad bot launched \u2705");
   process.once("SIGINT", () => bot.stop("SIGINT"));
   process.once("SIGTERM", () => bot.stop("SIGTERM"));
