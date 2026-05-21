@@ -128,6 +128,7 @@ async function notifyQueueUsers(
     telegramId: { $ne: newUserTelegramId },
     tiktokUsername: { $nin: ["__pending__", ""] },
     isBanned: false,
+    state: { $in: ["awaiting_cut_link", "idle"] },
     $and: [
       { $or: [{ suspendedUntil: null }, { suspendedUntil: { $lte: now } }] },
       { $or: [{ cancelCooldownUntil: null }, { cancelCooldownUntil: { $lte: now } }] },
@@ -273,8 +274,16 @@ async function tryMatch(bot: Telegraf): Promise<boolean> {
       // Check 24h cooldown between this pair
       const onCooldown = await hasCooldown(entryA.telegramId, entryB.telegramId);
       if (onCooldown) {
-        console.log(`[COOLDOWN] Pair skipped: telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId} matched within last 24h.`);
-        continue;
+        console.log(`[COOLDOWN] Pair telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId} matched within last 24h — removing both and notifying.`);
+        await Queue.deleteMany({ telegramId: { $in: [entryA.telegramId, entryB.telegramId] } });
+        await Promise.all([
+          User.updateOne({ telegramId: entryA.telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null }),
+          User.updateOne({ telegramId: entryB.telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null }),
+        ]);
+        const cooldownMsg = "⏳ Kau dah pernah swap dengan partner ni dalam 24 jam. Tunggu kejap atau submit link baru k!";
+        try { await bot.telegram.sendMessage(entryA.telegramId, cooldownMsg); } catch {}
+        try { await bot.telegram.sendMessage(entryB.telegramId, cooldownMsg); } catch {}
+        return tryMatch(bot);
       }
 
       console.log(`[MATCH_ATTEMPT] Eligible pair found: telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId}. Removing from queue...`);
@@ -286,7 +295,19 @@ async function tryMatch(bot: Telegraf): Promise<boolean> {
       if (deleted.deletedCount < 2) {
         // Race condition — one was claimed by a concurrent tryMatch, retry
         console.log(`[MATCH_ATTEMPT] Race condition on Queue delete (deleted=${deleted.deletedCount}). Retrying.`);
-        return tryMatch(bot);
+        const retryResult = await tryMatch(bot);
+        // After retry, clean up any user whose Queue entry was deleted but User state
+        // was never reset (orphaned inqueue user)
+        const orphans = await User.find({ state: "inqueue" });
+        for (const u of orphans) {
+          const inQueue = await Queue.findOne({ telegramId: u.telegramId });
+          if (!inQueue) {
+            await User.updateOne({ telegramId: u.telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+            try { await bot.telegram.sendMessage(u.telegramId, "⚠️ Eh something went wrong. Cuba submit link kau balik k!"); } catch {}
+            console.log(`[ORPHAN_CLEANUP] Reset orphaned inqueue user telegramId=${u.telegramId}.`);
+          }
+        }
+        return retryResult;
       }
 
       // Update both users to in_match
@@ -495,6 +516,8 @@ export function createBot(): Telegraf {
         `Eh, kau dah register la @${existingUser.tiktokUsername}! 👋\n\nCut baki: *${existingUser.cutBalance}*\n\nHantar TikTok cut price link untuk mula! 🔗`,
         { parse_mode: "Markdown" },
       );
+      // Clear any stale Queue entry before resetting state
+      await Queue.deleteOne({ telegramId });
       await User.updateOne({ telegramId }, { state: "awaiting_cut_link" });
       return;
     }
@@ -815,9 +838,9 @@ export function createBot(): Telegraf {
 
       await ctx.reply("Secured! 🔒 Finding ur partner…\n\n_(Kau dalam queue — bot tengah cari match sekarang)_", { parse_mode: "Markdown" });
 
-      // Notify other users, then add to Queue and attempt match
-      await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
+      // Add to Queue and attempt match first, then notify other users
       await addToQueue(bot, telegramId, text);
+      await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
       return;
     }
 

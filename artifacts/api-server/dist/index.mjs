@@ -41772,6 +41772,7 @@ async function notifyQueueUsers(bot, newUserTikTok, newUserTelegramId) {
     telegramId: { $ne: newUserTelegramId },
     tiktokUsername: { $nin: ["__pending__", ""] },
     isBanned: false,
+    state: { $in: ["awaiting_cut_link", "idle"] },
     $and: [
       { $or: [{ suspendedUntil: null }, { suspendedUntil: { $lte: now } }] },
       { $or: [{ cancelCooldownUntil: null }, { cancelCooldownUntil: { $lte: now } }] },
@@ -41876,8 +41877,22 @@ async function tryMatch(bot) {
       }
       const onCooldown = await hasCooldown(entryA.telegramId, entryB.telegramId);
       if (onCooldown) {
-        console.log(`[COOLDOWN] Pair skipped: telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId} matched within last 24h.`);
-        continue;
+        console.log(`[COOLDOWN] Pair telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId} matched within last 24h \u2014 removing both and notifying.`);
+        await Queue.deleteMany({ telegramId: { $in: [entryA.telegramId, entryB.telegramId] } });
+        await Promise.all([
+          User.updateOne({ telegramId: entryA.telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null }),
+          User.updateOne({ telegramId: entryB.telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null })
+        ]);
+        const cooldownMsg = "\u23F3 Kau dah pernah swap dengan partner ni dalam 24 jam. Tunggu kejap atau submit link baru k!";
+        try {
+          await bot.telegram.sendMessage(entryA.telegramId, cooldownMsg);
+        } catch {
+        }
+        try {
+          await bot.telegram.sendMessage(entryB.telegramId, cooldownMsg);
+        } catch {
+        }
+        return tryMatch(bot);
       }
       console.log(`[MATCH_ATTEMPT] Eligible pair found: telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId}. Removing from queue...`);
       const deleted = await Queue.deleteMany({
@@ -41885,7 +41900,20 @@ async function tryMatch(bot) {
       });
       if (deleted.deletedCount < 2) {
         console.log(`[MATCH_ATTEMPT] Race condition on Queue delete (deleted=${deleted.deletedCount}). Retrying.`);
-        return tryMatch(bot);
+        const retryResult = await tryMatch(bot);
+        const orphans = await User.find({ state: "inqueue" });
+        for (const u of orphans) {
+          const inQueue = await Queue.findOne({ telegramId: u.telegramId });
+          if (!inQueue) {
+            await User.updateOne({ telegramId: u.telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+            try {
+              await bot.telegram.sendMessage(u.telegramId, "\u26A0\uFE0F Eh something went wrong. Cuba submit link kau balik k!");
+            } catch {
+            }
+            console.log(`[ORPHAN_CLEANUP] Reset orphaned inqueue user telegramId=${u.telegramId}.`);
+          }
+        }
+        return retryResult;
       }
       await Promise.all([
         User.updateOne({ telegramId: entryA.telegramId }, { state: "in_match", isWaiting: false, queuedAt: null, lastMatchPartnerId: entryB.telegramId }),
@@ -42094,6 +42122,7 @@ Cut baki: *${existingUser.cutBalance}*
 Hantar TikTok cut price link untuk mula! \u{1F517}`,
         { parse_mode: "Markdown" }
       );
+      await Queue.deleteOne({ telegramId });
       await User.updateOne({ telegramId }, { state: "awaiting_cut_link" });
       return;
     }
@@ -42405,8 +42434,8 @@ ${refLink}`,
   pendingLink (before)= ${user.pendingLink ? `"${user.pendingLink}"` : "NULL"}`
       );
       await ctx.reply("Secured! \u{1F512} Finding ur partner\u2026\n\n_(Kau dalam queue \u2014 bot tengah cari match sekarang)_", { parse_mode: "Markdown" });
-      await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
       await addToQueue(bot, telegramId, text);
+      await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
       return;
     }
     if (user.state === "inqueue") {
