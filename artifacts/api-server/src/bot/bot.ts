@@ -1142,7 +1142,7 @@ export function createBot(): Telegraf {
     }
 
     if (user.state !== "awaiting_proof") {
-      await ctx.reply("Tiada match aktif. Hantar link TikTok anda dahulu untuk mula.");
+      await ctx.reply("Oopsie 😭\n\nThere's no active cut match to verify right now.");
       return;
     }
 
@@ -1195,7 +1195,7 @@ export function createBot(): Telegraf {
 
     console.log(`[PROOF_SUBMITTED] telegramId=${telegramId} submitted proof for matchId=${matchId}.`);
     await User.updateOne({ telegramId }, { state: "awaiting_partner_approval" });
-    await ctx.reply("✅ Bukti berjaya dihantar.\nTunggu partner anda semak bukti tersebut.");
+    await ctx.reply("✅ Proof received successfully!\n\nYour cut buddy is checking it now 👀✨");
 
     const approveButtons = Markup.inlineKeyboard([
       Markup.button.callback("✅ Approve Proof", `approve_proof:${matchId}:${telegramId}`),
@@ -1513,7 +1513,7 @@ export function createBot(): Telegraf {
 
     await User.updateOne({ telegramId: proofOwnerId }, { $inc: { totalApprovedCount: 1 } });
     console.log(`[PROOF_APPROVED] telegramId=${telegramId} approved proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
-    await bot.telegram.sendMessage(proofOwnerId, "✅ Partner anda telah approve bukti anda.");
+    await bot.telegram.sendMessage(proofOwnerId, "🎉 Your cut buddy approved your proof!\n\nSwap completed successfully 🤝✨");
     await checkAndCompleteMatch(bot, matchId);
   });
 

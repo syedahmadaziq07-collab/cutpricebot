@@ -42741,7 +42741,7 @@ Status: ${statusMap[user.state] ?? user.state}`,
       return;
     }
     if (user.state !== "awaiting_proof") {
-      await ctx.reply("Tiada match aktif. Hantar link TikTok anda dahulu untuk mula.");
+      await ctx.reply("Oopsie \u{1F62D}\n\nThere's no active cut match to verify right now.");
       return;
     }
     const match = await Match.findOne({
@@ -42786,7 +42786,7 @@ Status: ${statusMap[user.state] ?? user.state}`,
     }
     console.log(`[PROOF_SUBMITTED] telegramId=${telegramId} submitted proof for matchId=${matchId}.`);
     await User.updateOne({ telegramId }, { state: "awaiting_partner_approval" });
-    await ctx.reply("\u2705 Bukti berjaya dihantar.\nTunggu partner anda semak bukti tersebut.");
+    await ctx.reply("\u2705 Proof received successfully!\n\nYour cut buddy is checking it now \u{1F440}\u2728");
     const approveButtons = import_telegraf.Markup.inlineKeyboard([
       import_telegraf.Markup.button.callback("\u2705 Approve Proof", `approve_proof:${matchId}:${telegramId}`),
       import_telegraf.Markup.button.callback("\u274C Reject Proof", `reject_proof:${matchId}:${telegramId}`)
@@ -43071,7 +43071,7 @@ ${refLink}`,
     }
     await User.updateOne({ telegramId: proofOwnerId }, { $inc: { totalApprovedCount: 1 } });
     console.log(`[PROOF_APPROVED] telegramId=${telegramId} approved proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
-    await bot.telegram.sendMessage(proofOwnerId, "\u2705 Partner anda telah approve bukti anda.");
+    await bot.telegram.sendMessage(proofOwnerId, "\u{1F389} Your cut buddy approved your proof!\n\nSwap completed successfully \u{1F91D}\u2728");
     await checkAndCompleteMatch(bot, matchId);
   });
   bot.action(/^reject_proof:(.+):(\d+)$/, async (ctx) => {
