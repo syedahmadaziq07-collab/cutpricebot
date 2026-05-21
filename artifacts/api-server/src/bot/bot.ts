@@ -1356,34 +1356,57 @@ export function createBot(): Telegraf {
   bot.action("done_cut", async (ctx) => {
     await ctx.answerCbQuery();
     const telegramId = ctx.from!.id;
-    const user = await User.findOne({ telegramId });
-    if (!user || user.state !== "in_match") {
-      await ctx.reply("Tiada match aktif untuk disahkan.");
+
+    // Remove buttons immediately — prevents double-clicks visually
+    try {
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+      console.log(`[BUTTONS_REMOVED] done_cut — telegramId=${telegramId}`);
+    } catch { /* already edited or message not found */ }
+
+    // Atomic state transition: only succeeds if user is still in_match
+    const updated = await User.findOneAndUpdate(
+      { telegramId, state: "in_match" },
+      { state: "awaiting_proof" },
+    );
+    if (!updated) {
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] done_cut — telegramId=${telegramId} — not in_match state.`);
+      await ctx.reply("⚠️ Action already processed.");
       return;
     }
-    await User.updateOne({ telegramId }, { state: "awaiting_proof" });
     await ctx.reply("📸 Sila hantar *screenshot* sebagai bukti anda telah cut link partner.", { parse_mode: "Markdown" });
   });
 
   bot.action("cancel_match", async (ctx) => {
     await ctx.answerCbQuery();
     const telegramId = ctx.from!.id;
+
+    // Remove buttons immediately — prevents double-clicks visually
+    try {
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+      console.log(`[BUTTONS_REMOVED] cancel_match — telegramId=${telegramId}`);
+    } catch { /* already edited or message not found */ }
+
     const user = await User.findOne({ telegramId });
     if (!user || user.state !== "in_match") {
-      await ctx.reply("Tiada match aktif untuk dibatalkan.");
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] cancel_match — telegramId=${telegramId} — not in_match state.`);
+      await ctx.reply("⚠️ Action already processed.");
       return;
     }
 
-    const match = await Match.findOne({
-      $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
-      status: "active",
-    });
-    if (!match) { await ctx.reply("Tiada match aktif."); return; }
+    // Atomic cancel: only succeeds if match is still active (prevents duplicate cancellation)
+    const match = await Match.findOneAndUpdate(
+      { $or: [{ user1Id: telegramId }, { user2Id: telegramId }], status: "active" },
+      { status: "cancelled" },
+      { new: false },
+    );
+    if (!match) {
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] cancel_match — telegramId=${telegramId} — no active match found.`);
+      await ctx.reply("⚠️ Action already processed.");
+      return;
+    }
 
     const partnerId = match.user1Id === telegramId ? match.user2Id : match.user1Id;
     const partner = await User.findOne({ telegramId: partnerId });
-
-    await Match.updateOne({ _id: match._id }, { status: "cancelled" });
 
     const timerId = match._id.toString();
     const existingTimer = matchTimers.get(timerId);
@@ -1428,6 +1451,12 @@ export function createBot(): Telegraf {
     const matchId = ctx.match[1];
     const proofOwnerId = parseInt(ctx.match[2], 10);
 
+    // Remove buttons immediately — prevents double-clicks visually
+    try {
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+      console.log(`[BUTTONS_REMOVED] approve_proof — telegramId=${telegramId} matchId=${matchId}`);
+    } catch { /* already edited or message not found */ }
+
     if (telegramId === proofOwnerId) {
       console.log(`[SELF_APPROVAL_BLOCKED] telegramId=${telegramId} tried to approve their own proof for matchId=${matchId}.`);
       await ctx.reply("❌ Anda tidak boleh approve bukti anda sendiri.");
@@ -1435,7 +1464,11 @@ export function createBot(): Telegraf {
     }
 
     const match = await Match.findById(matchId);
-    if (!match || match.status !== "active") { await ctx.reply("Match ini tidak lagi aktif."); return; }
+    if (!match || match.status !== "active") {
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] approve_proof — telegramId=${telegramId} matchId=${matchId} — match no longer active.`);
+      await ctx.reply("⚠️ Action already processed.");
+      return;
+    }
 
     if (match.user1Id !== telegramId && match.user2Id !== telegramId) {
       console.log(`[INVALID_CALLBACK_BLOCKED] telegramId=${telegramId} tried to approve proof for matchId=${matchId} but is not a participant.`);
@@ -1444,13 +1477,18 @@ export function createBot(): Telegraf {
     }
 
     const isProofOwnerUser1 = match.user1Id === proofOwnerId;
+    const approvedField = isProofOwnerUser1 ? "user1ProofApprovedByPartner" : "user2ProofApprovedByPartner";
 
-    if (isProofOwnerUser1) {
-      if (match.user1ProofApprovedByPartner) { await ctx.reply("Bukti ini sudah diapprove sebelum ini."); return; }
-      await Match.updateOne({ _id: matchId }, { user1ProofApprovedByPartner: true });
-    } else {
-      if (match.user2ProofApprovedByPartner) { await ctx.reply("Bukti ini sudah diapprove sebelum ini."); return; }
-      await Match.updateOne({ _id: matchId }, { user2ProofApprovedByPartner: true });
+    // Atomic lock: only sets the flag if it is still false — blocks duplicate approvals
+    const locked = await Match.findOneAndUpdate(
+      { _id: matchId, status: "active", [approvedField]: false },
+      { [approvedField]: true },
+      { new: true },
+    );
+    if (!locked) {
+      console.log(`[CALLBACK_LOCKED] approve_proof — telegramId=${telegramId} matchId=${matchId} — already approved or match inactive.`);
+      await ctx.reply("⚠️ Action already processed.");
+      return;
     }
 
     await User.updateOne({ telegramId: proofOwnerId }, { $inc: { totalApprovedCount: 1 } });
@@ -1465,23 +1503,43 @@ export function createBot(): Telegraf {
     const matchId = ctx.match[1];
     const proofOwnerId = parseInt(ctx.match[2], 10);
 
+    // Remove buttons immediately — prevents double-clicks visually
+    try {
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+      console.log(`[BUTTONS_REMOVED] reject_proof — telegramId=${telegramId} matchId=${matchId}`);
+    } catch { /* already edited or message not found */ }
+
     if (telegramId === proofOwnerId) {
       console.log(`[SELF_APPROVAL_BLOCKED] telegramId=${telegramId} tried to reject their own proof for matchId=${matchId}.`);
       await ctx.reply("❌ Anda tidak boleh reject bukti anda sendiri.");
       return;
     }
 
-    const match = await Match.findById(matchId);
-    if (!match || match.status !== "active") { await ctx.reply("Match ini tidak lagi aktif."); return; }
+    // Read match first for participant validation
+    const matchDoc = await Match.findById(matchId);
+    if (!matchDoc || matchDoc.status !== "active") {
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] reject_proof — telegramId=${telegramId} matchId=${matchId} — match no longer active.`);
+      await ctx.reply("⚠️ Action already processed.");
+      return;
+    }
 
-    if (match.user1Id !== telegramId && match.user2Id !== telegramId) {
+    if (matchDoc.user1Id !== telegramId && matchDoc.user2Id !== telegramId) {
       console.log(`[INVALID_CALLBACK_BLOCKED] telegramId=${telegramId} tried to reject proof for matchId=${matchId} but is not a participant.`);
       await ctx.reply("Anda bukan sebahagian daripada match ini.");
       return;
     }
 
-    // Cancel the match
-    await Match.updateOne({ _id: match._id }, { status: "cancelled" });
+    // Atomic cancel: only succeeds if match is still active — blocks duplicate rejection
+    const match = await Match.findOneAndUpdate(
+      { _id: matchId, status: "active" },
+      { status: "cancelled" },
+      { new: false },
+    );
+    if (!match) {
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] reject_proof — telegramId=${telegramId} matchId=${matchId} — already cancelled.`);
+      await ctx.reply("⚠️ Action already processed.");
+      return;
+    }
 
     const timerId = match._id.toString();
     const existingTimer = matchTimers.get(timerId);
