@@ -42192,11 +42192,11 @@ async function checkAndCompleteMatch(bot, matchId) {
       const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
       await bot.telegram.sendMessage(
         uid,
-        `\u{1F389} Swap done!
+        `\u{1F389} Swap completed successfully!
 
-Thanks for using CutPricebot \u{1F91D}
+Thanks for using CutPricebot \u{1F91D}\u2728
 
-Cut balance: *0* \u{1F62E}
+Remaining cuts: *0* \u{1F496}
 
 You've used all your cuts!
 
@@ -42208,11 +42208,11 @@ ${refLink}`,
     } else {
       await bot.telegram.sendMessage(
         uid,
-        `\u{1F389} Swap done!
+        `\u{1F389} Swap completed successfully!
 
-Thanks for using CutPricebot \u{1F91D}
+Thanks for using CutPricebot \u{1F91D}\u2728
 
-Cut balance: *${newBalance}*`,
+Remaining cuts: *${newBalance}* \u{1F496}`,
         {
           parse_mode: "Markdown",
           ...import_telegraf.Markup.inlineKeyboard([import_telegraf.Markup.button.callback("\u{1F501} Cut More!", "cut_more")])
@@ -42792,9 +42792,9 @@ Status: ${statusMap[user.state] ?? user.state}`,
       import_telegraf.Markup.button.callback("\u274C Reject Proof", `reject_proof:${matchId}:${telegramId}`)
     ]);
     await bot.telegram.sendPhoto(partnerId, proofFileId, {
-      caption: `\u{1F4F8} *Partner anda telah menghantar bukti cut.*
+      caption: `\u{1F4F8} Your cut buddy just sent their proof!
 
-Sila semak bukti di bawah.`,
+Take a quick look below and make sure everything's valid \u{1F440}\u2728`,
       parse_mode: "Markdown",
       ...approveButtons
     });

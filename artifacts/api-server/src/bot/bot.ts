@@ -588,13 +588,13 @@ async function checkAndCompleteMatch(bot: Telegraf, matchId: string): Promise<vo
       const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
       await bot.telegram.sendMessage(
         uid,
-        `🎉 Swap done!\n\nThanks for using CutPricebot 🤝\n\nCut balance: *0* 😮\n\nYou've used all your cuts!\n\n🔥 Refer a friend and get *+${REFERRAL_CUT_REWARD} cuts* when they complete their first swap!\n\n${refLink}`,
+        `🎉 Swap completed successfully!\n\nThanks for using CutPricebot 🤝✨\n\nRemaining cuts: *0* 💖\n\nYou've used all your cuts!\n\n🔥 Refer a friend and get *+${REFERRAL_CUT_REWARD} cuts* when they complete their first swap!\n\n${refLink}`,
         { parse_mode: "Markdown" },
       );
     } else {
       await bot.telegram.sendMessage(
         uid,
-        `🎉 Swap done!\n\nThanks for using CutPricebot 🤝\n\nCut balance: *${newBalance}*`,
+        `🎉 Swap completed successfully!\n\nThanks for using CutPricebot 🤝✨\n\nRemaining cuts: *${newBalance}* 💖`,
         {
           parse_mode: "Markdown",
           ...Markup.inlineKeyboard([Markup.button.callback("🔁 Cut More!", "cut_more")]),
@@ -1203,7 +1203,7 @@ export function createBot(): Telegraf {
     ]);
 
     await bot.telegram.sendPhoto(partnerId, proofFileId, {
-      caption: `📸 *Partner anda telah menghantar bukti cut.*\n\nSila semak bukti di bawah.`,
+      caption: `📸 Your cut buddy just sent their proof!\n\nTake a quick look below and make sure everything's valid 👀✨`,
       parse_mode: "Markdown",
       ...approveButtons,
     });
