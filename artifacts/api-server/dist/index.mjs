@@ -41606,7 +41606,14 @@ var userSchema = new mongoose2.Schema(
     lastDailyReset: { type: Date, default: null },
     dailyReferralCutsToday: { type: Number, default: 0 },
     dailyReferralResetAt: { type: Date, default: null },
-    firstSwapCompleted: { type: Boolean, default: false }
+    firstSwapCompleted: { type: Boolean, default: false },
+    totalRejectCount: { type: Number, default: 0 },
+    totalApprovedCount: { type: Number, default: 0 },
+    lastRejectAt: { type: Date, default: null },
+    cooldownCount: { type: Number, default: 0 },
+    isFlagged: { type: Boolean, default: false },
+    weeklyRejectWindowStart: { type: Date, default: null },
+    weeklyRejectWindowCount: { type: Number, default: 0 }
   },
   { timestamps: true }
 );
@@ -42100,6 +42107,12 @@ Cut baki: *${newBalance}*`,
     }
   }
 }
+function getAdminIds() {
+  return (process.env["ADMIN_IDS"] ?? "").split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
+}
+var WEEKLY_REJECT_THRESHOLD = 5;
+var AUTO_BAN_REJECT_THRESHOLD = 10;
+var SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1e3;
 function createBot() {
   const token = process.env["BOT_TOKEN"];
   if (!token) throw new Error("BOT_TOKEN is required");
@@ -42358,6 +42371,165 @@ _(Had harian: ${DAILY_REFERRAL_CAP} cuts daripada referral)_`,
       );
     } catch {
     }
+  });
+  bot.command("rejectlist", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const flagged = await User.find({ totalRejectCount: { $gt: 0 } }).sort({ totalRejectCount: -1 }).limit(15).select("tiktokUsername telegramId totalRejectCount cooldownCount lastRejectAt isFlagged isBanned");
+    if (flagged.length === 0) {
+      await ctx.reply("\u2705 No users with rejected proofs.");
+      return;
+    }
+    const lines = flagged.map((u, i) => {
+      const age = u.lastRejectAt ? `${Math.round((Date.now() - u.lastRejectAt.getTime()) / (1e3 * 60 * 60))}h ago` : "never";
+      const badges = [
+        u.isBanned ? "\u{1F6AB} BANNED" : null,
+        u.isFlagged ? "\u{1F6A8} FLAGGED" : null
+      ].filter(Boolean).join(" ");
+      return `${i + 1}. @${u.tiktokUsername} (${u.telegramId})${badges ? `  ${badges}` : ""}
+   Rejects: *${u.totalRejectCount}* | Cooldowns: ${u.cooldownCount}
+   Last reject: ${age}`;
+    });
+    await ctx.reply(`\u{1F6A8} *Frequently Rejected Users:*
+
+` + lines.join("\n\n"), { parse_mode: "Markdown" });
+  });
+  bot.command("ban", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    if (args.length === 0) {
+      await ctx.reply("\u2139\uFE0F Usage: `/ban USER_ID`", { parse_mode: "Markdown" });
+      return;
+    }
+    const targetId = parseInt(args[0], 10);
+    if (isNaN(targetId)) {
+      await ctx.reply("\u274C Invalid USER_ID.");
+      return;
+    }
+    const user = await User.findOne({ telegramId: targetId });
+    if (!user) {
+      await ctx.reply(`\u274C User ${targetId} not found.`);
+      return;
+    }
+    if (user.isBanned) {
+      await ctx.reply(`\u26A0\uFE0F @${user.tiktokUsername} is already banned.`);
+      return;
+    }
+    await User.updateOne({ telegramId: targetId }, { isBanned: true, state: "idle", isWaiting: false, queuedAt: null, pendingLink: null });
+    await Queue.deleteOne({ telegramId: targetId });
+    const activeMatch = await Match.findOne({ $or: [{ user1Id: targetId }, { user2Id: targetId }], status: "active" });
+    if (activeMatch) {
+      await Match.updateOne({ _id: activeMatch._id }, { status: "cancelled" });
+      const timerId = activeMatch._id.toString();
+      const t = matchTimers.get(timerId);
+      if (t) {
+        clearTimeout(t);
+        matchTimers.delete(timerId);
+      }
+      const partnerId = activeMatch.user1Id === targetId ? activeMatch.user2Id : activeMatch.user1Id;
+      const partner = await User.findOne({ telegramId: partnerId });
+      try {
+        await bot.telegram.sendMessage(partnerId, "\u26A0\uFE0F *Partner anda telah di-ban oleh admin.*\nSistem sedang mencari partner baru untuk anda \u{1F91D}", { parse_mode: "Markdown" });
+      } catch {
+      }
+      if (partner?.pendingLink) {
+        await addToQueue(bot, partnerId, partner.pendingLink);
+      } else {
+        await User.updateOne({ telegramId: partnerId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+      }
+    }
+    console.log(`[ADMIN_BAN] telegramId=${targetId} (@${user.tiktokUsername}) banned by admin telegramId=${ctx.from.id}.`);
+    try {
+      await bot.telegram.sendMessage(targetId, "\u{1F6AB} Akaun anda telah di-ban secara kekal oleh admin.");
+    } catch {
+    }
+    await ctx.reply(`\u{1F6AB} *@${user.tiktokUsername}* (${targetId}) has been permanently banned.`, { parse_mode: "Markdown" });
+  });
+  bot.command("unban", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    if (args.length === 0) {
+      await ctx.reply("\u2139\uFE0F Usage: `/unban USER_ID`", { parse_mode: "Markdown" });
+      return;
+    }
+    const targetId = parseInt(args[0], 10);
+    if (isNaN(targetId)) {
+      await ctx.reply("\u274C Invalid USER_ID.");
+      return;
+    }
+    const user = await User.findOne({ telegramId: targetId });
+    if (!user) {
+      await ctx.reply(`\u274C User ${targetId} not found.`);
+      return;
+    }
+    if (!user.isBanned) {
+      await ctx.reply(`\u26A0\uFE0F @${user.tiktokUsername} is not banned.`);
+      return;
+    }
+    await User.updateOne({ telegramId: targetId }, { isBanned: false, isFlagged: false, state: "awaiting_cut_link" });
+    console.log(`[ADMIN_UNBAN] telegramId=${targetId} (@${user.tiktokUsername}) unbanned by admin telegramId=${ctx.from.id}.`);
+    try {
+      await bot.telegram.sendMessage(targetId, "\u2705 Akaun anda telah di-unban oleh admin. Anda boleh menggunakan sistem semula sekarang.");
+    } catch {
+    }
+    await ctx.reply(`\u2705 *@${user.tiktokUsername}* (${targetId}) has been unbanned.`, { parse_mode: "Markdown" });
+  });
+  bot.command("userstats", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    if (args.length === 0) {
+      await ctx.reply("\u2139\uFE0F Usage: `/userstats USER_ID`", { parse_mode: "Markdown" });
+      return;
+    }
+    const targetId = parseInt(args[0], 10);
+    if (isNaN(targetId)) {
+      await ctx.reply("\u274C Invalid USER_ID.");
+      return;
+    }
+    const u = await User.findOne({ telegramId: targetId });
+    if (!u) {
+      await ctx.reply(`\u274C User ${targetId} not found.`);
+      return;
+    }
+    const lastRejectStr = u.lastRejectAt ? `${Math.round((Date.now() - u.lastRejectAt.getTime()) / (1e3 * 60))} min ago` : "never";
+    const cooldownStr = u.cancelCooldownUntil && u.cancelCooldownUntil > /* @__PURE__ */ new Date() ? `${Math.round((u.cancelCooldownUntil.getTime() - Date.now()) / (1e3 * 60))} min left` : "none";
+    const suspendStr = u.suspendedUntil && u.suspendedUntil > /* @__PURE__ */ new Date() ? `${Math.round((u.suspendedUntil.getTime() - Date.now()) / (1e3 * 60))} min left` : "none";
+    const badges = [
+      u.isBanned ? "\u{1F6AB} BANNED" : null,
+      u.isFlagged ? "\u{1F6A8} FLAGGED" : null
+    ].filter(Boolean).join(" ") || "none";
+    const report = [
+      `\u{1F464} *User Stats: @${u.tiktokUsername}*`,
+      `TelegramID: \`${u.telegramId}\``,
+      `TG username: @${u.telegramUsername || "\u2014"}`,
+      ``,
+      `State: \`${u.state}\``,
+      `Cut balance: ${u.cutBalance}`,
+      `Strikes: ${u.strikes}/3`,
+      `Flags: ${badges}`,
+      ``,
+      `Total rejects: ${u.totalRejectCount}`,
+      `Total approved: ${u.totalApprovedCount}`,
+      `Cooldown count: ${u.cooldownCount}`,
+      `Weekly rejects: ${u.weeklyRejectWindowCount}`,
+      `Last reject: ${lastRejectStr}`,
+      ``,
+      `Cancel cooldown: ${cooldownStr}`,
+      `Suspension: ${suspendStr}`,
+      `Joined: ${u.createdAt.toISOString().slice(0, 10)}`
+    ].join("\n");
+    await ctx.reply(report, { parse_mode: "Markdown" });
   });
   bot.command("status", async (ctx) => {
     const user = await User.findOne({ telegramId: ctx.from.id });
@@ -42708,6 +42880,7 @@ ${refLink}`,
       }
       await Match.updateOne({ _id: matchId }, { user2ProofApprovedByPartner: true });
     }
+    await User.updateOne({ telegramId: proofOwnerId }, { $inc: { totalApprovedCount: 1 } });
     console.log(`[PROOF_APPROVED] telegramId=${telegramId} approved proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
     await bot.telegram.sendMessage(proofOwnerId, "\u2705 Partner anda telah approve bukti anda.");
     await checkAndCompleteMatch(bot, matchId);
@@ -42747,6 +42920,59 @@ ${refLink}`,
     await Queue.deleteOne({ telegramId: proofOwnerId });
     console.log(`[PROOF_REJECTED] telegramId=${telegramId} rejected proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
     console.log(`[USER_COOLDOWN_24H] telegramId=${proofOwnerId} placed on 24h cooldown until ${cooldownUntil.toISOString()} due to proof rejection.`);
+    {
+      const rejectNow = /* @__PURE__ */ new Date();
+      const ownerBefore = await User.findOne({ telegramId: proofOwnerId });
+      const windowStart = ownerBefore?.weeklyRejectWindowStart ?? null;
+      const windowExpired = !windowStart || rejectNow.getTime() - windowStart.getTime() > SEVEN_DAYS_MS;
+      const newWeeklyCount = windowExpired ? 1 : (ownerBefore?.weeklyRejectWindowCount ?? 0) + 1;
+      await User.updateOne(
+        { telegramId: proofOwnerId },
+        {
+          $inc: { totalRejectCount: 1, cooldownCount: 1 },
+          $set: {
+            lastRejectAt: rejectNow,
+            weeklyRejectWindowCount: newWeeklyCount,
+            ...windowExpired ? { weeklyRejectWindowStart: rejectNow } : {}
+          }
+        }
+      );
+      const owner = await User.findOne({ telegramId: proofOwnerId });
+      const totalRejects = owner?.totalRejectCount ?? 0;
+      console.log(`[USER_REJECT_INCREMENT] telegramId=${proofOwnerId} totalRejectCount=${totalRejects} weeklyCount=${newWeeklyCount}.`);
+      if (totalRejects >= AUTO_BAN_REJECT_THRESHOLD && !owner?.isBanned) {
+        await User.updateOne({ telegramId: proofOwnerId }, { isBanned: true });
+        console.log(`[USER_AUTO_BANNED] telegramId=${proofOwnerId} auto-banned after ${totalRejects} total rejected proofs.`);
+        for (const adminId of getAdminIds()) {
+          try {
+            await bot.telegram.sendMessage(
+              adminId,
+              `\u{1F6AB} *Auto-ban triggered.*
+
+@${owner?.tiktokUsername ?? proofOwnerId} (telegramId: ${proofOwnerId}) has been permanently banned after *${totalRejects} total proof rejections*.`,
+              { parse_mode: "Markdown" }
+            );
+          } catch {
+          }
+        }
+      } else if (newWeeklyCount >= WEEKLY_REJECT_THRESHOLD && !owner?.isFlagged) {
+        await User.updateOne({ telegramId: proofOwnerId }, { isFlagged: true });
+        console.log(`[USER_FLAGGED] telegramId=${proofOwnerId} flagged after ${newWeeklyCount} rejected proofs within 7 days.`);
+        for (const adminId of getAdminIds()) {
+          try {
+            await bot.telegram.sendMessage(
+              adminId,
+              `\u{1F6A8} *User flagged for repeated rejected proof submissions.*
+
+@${owner?.tiktokUsername ?? proofOwnerId} (telegramId: ${proofOwnerId})
+Weekly rejects: *${newWeeklyCount}* | Total rejects: *${totalRejects}*`,
+              { parse_mode: "Markdown" }
+            );
+          } catch {
+          }
+        }
+      }
+    }
     try {
       await bot.telegram.sendMessage(
         proofOwnerId,

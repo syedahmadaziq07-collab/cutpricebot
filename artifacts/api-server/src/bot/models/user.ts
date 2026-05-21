@@ -22,6 +22,13 @@ export interface IUser extends Document {
   dailyReferralCutsToday: number;
   dailyReferralResetAt: Date | null;
   firstSwapCompleted: boolean;
+  totalRejectCount: number;
+  totalApprovedCount: number;
+  lastRejectAt: Date | null;
+  cooldownCount: number;
+  isFlagged: boolean;
+  weeklyRejectWindowStart: Date | null;
+  weeklyRejectWindowCount: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -49,6 +56,13 @@ const userSchema = new mongoose.Schema<IUser>(
     dailyReferralCutsToday: { type: Number, default: 0 },
     dailyReferralResetAt: { type: Date, default: null },
     firstSwapCompleted: { type: Boolean, default: false },
+    totalRejectCount: { type: Number, default: 0 },
+    totalApprovedCount: { type: Number, default: 0 },
+    lastRejectAt: { type: Date, default: null },
+    cooldownCount: { type: Number, default: 0 },
+    isFlagged: { type: Boolean, default: false },
+    weeklyRejectWindowStart: { type: Date, default: null },
+    weeklyRejectWindowCount: { type: Number, default: 0 },
   },
   { timestamps: true },
 );
