@@ -29,6 +29,8 @@ export interface IUser extends Document {
   isFlagged: boolean;
   weeklyRejectWindowStart: Date | null;
   weeklyRejectWindowCount: number;
+  noResponseStrikeCount: number;
+  noResponseStrikeWindowStart: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -63,6 +65,8 @@ const userSchema = new mongoose.Schema<IUser>(
     isFlagged: { type: Boolean, default: false },
     weeklyRejectWindowStart: { type: Date, default: null },
     weeklyRejectWindowCount: { type: Number, default: 0 },
+    noResponseStrikeCount: { type: Number, default: 0 },
+    noResponseStrikeWindowStart: { type: Date, default: null },
   },
   { timestamps: true },
 );

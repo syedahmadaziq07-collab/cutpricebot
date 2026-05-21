@@ -71,6 +71,11 @@ const DAILY_REFERRAL_CAP = 20;
 const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 const matchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const proofTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+const NO_RESPONSE_TIMEOUT_MS = 4 * 60 * 1000;
+const NO_RESPONSE_COOLDOWN_30M_MS = 30 * 60 * 1000;
+const NO_RESPONSE_24H_MS = 24 * 60 * 60 * 1000;
 
 function generateReferralCode(): string {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -204,6 +209,106 @@ async function issueStrike(bot: Telegraf, telegramId: number): Promise<void> {
   }
 }
 
+async function issueNoResponseStrike(bot: Telegraf, inactivePartnerId: number): Promise<void> {
+  const user = await User.findOne({ telegramId: inactivePartnerId });
+  if (!user) return;
+
+  const now = new Date();
+  const windowStart = user.noResponseStrikeWindowStart;
+  const windowExpired = !windowStart || (now.getTime() - windowStart.getTime() > NO_RESPONSE_24H_MS);
+  const currentCount = windowExpired ? 0 : (user.noResponseStrikeCount ?? 0);
+  const newCount = currentCount + 1;
+
+  const baseUpdate: Record<string, unknown> = {
+    noResponseStrikeCount: newCount,
+    ...(windowExpired ? { noResponseStrikeWindowStart: now } : {}),
+  };
+
+  console.log(`[NO_RESPONSE_STRIKE] telegramId=${inactivePartnerId} — strike ${newCount}/3 (window ${windowExpired ? "reset" : "active"}).`);
+
+  if (newCount === 1) {
+    await User.updateOne({ telegramId: inactivePartnerId }, baseUpdate);
+    try {
+      await bot.telegram.sendMessage(
+        inactivePartnerId,
+        `⚠️ Hey! You didn't respond to your partner's proof in time.\n\nStrike: 1/3\n\nIf you fail to approve again, your account will be banned for 24 hours 🚫`,
+      );
+    } catch { /* user may have blocked bot */ }
+  } else if (newCount === 2) {
+    const cooldownUntil = new Date(now.getTime() + NO_RESPONSE_COOLDOWN_30M_MS);
+    await User.updateOne({ telegramId: inactivePartnerId }, { ...baseUpdate, cancelCooldownUntil: cooldownUntil });
+    console.log(`[NO_RESPONSE_COOLDOWN_30M] telegramId=${inactivePartnerId} placed on 30-min cooldown until ${cooldownUntil.toISOString()}.`);
+    try {
+      await bot.telegram.sendMessage(
+        inactivePartnerId,
+        `⚠️ Hey! You didn't respond to your partner's proof in time.\n\nStrike: 2/3\n\n⏳ You've been placed on a 30-minute cooldown.\n\nIf you fail to approve again, your account will be banned for 24 hours 🚫`,
+      );
+    } catch { /* user may have blocked bot */ }
+  } else {
+    const cooldownUntil = new Date(now.getTime() + NO_RESPONSE_24H_MS);
+    await User.updateOne({ telegramId: inactivePartnerId }, { ...baseUpdate, cancelCooldownUntil: cooldownUntil });
+    console.log(`[NO_RESPONSE_COOLDOWN_24H] telegramId=${inactivePartnerId} placed on 24h cooldown until ${cooldownUntil.toISOString()}.`);
+    try {
+      await bot.telegram.sendMessage(
+        inactivePartnerId,
+        `⚠️ Hey! You didn't respond to your partner's proof in time.\n\nStrike: ${newCount}/3\n\n🚫 You've been placed on a 24-hour cooldown for repeated non-responses.`,
+      );
+    } catch { /* user may have blocked bot */ }
+  }
+}
+
+async function handleProofTimeout(
+  bot: Telegraf,
+  matchId: string,
+  proofOwnerId: number,
+  inactivePartnerId: number,
+): Promise<void> {
+  const match = await Match.findById(matchId);
+  if (!match || match.status !== "active") {
+    console.log(`[NO_RESPONSE_TIMEOUT] matchId=${matchId} proofOwnerId=${proofOwnerId} — match no longer active, skipping.`);
+    return;
+  }
+
+  const isUser1 = match.user1Id === proofOwnerId;
+  const proofApproved = isUser1 ? match.user1ProofApprovedByPartner : match.user2ProofApprovedByPartner;
+  if (proofApproved) {
+    console.log(`[NO_RESPONSE_TIMEOUT] matchId=${matchId} proofOwnerId=${proofOwnerId} — proof already approved, skipping.`);
+    return;
+  }
+
+  console.log(`[NO_RESPONSE_TIMEOUT] matchId=${matchId} — inactivePartnerId=${inactivePartnerId} did not respond to proof from proofOwnerId=${proofOwnerId}. Cancelling match.`);
+
+  await Match.updateOne({ _id: matchId }, { status: "cancelled" });
+
+  const existingMatchTimer = matchTimers.get(matchId);
+  if (existingMatchTimer) { clearTimeout(existingMatchTimer); matchTimers.delete(matchId); }
+
+  proofTimers.delete(`proof:${matchId}:${proofOwnerId}`);
+
+  // Reset proof owner → allow new link
+  await Queue.deleteOne({ telegramId: proofOwnerId });
+  await User.updateOne(
+    { telegramId: proofOwnerId },
+    { state: "awaiting_cut_link", isWaiting: false, queuedAt: null },
+  );
+  console.log(`[NO_RESPONSE_TIMEOUT] telegramId=${proofOwnerId} reset to awaiting_cut_link.`);
+
+  try {
+    await bot.telegram.sendMessage(
+      proofOwnerId,
+      `⏰ Your partner went missing 😭\n\nNo response received within 4 minutes.\n\nYou can now submit a new link and find another swap partner 🔗✨`,
+    );
+  } catch { /* user may have blocked bot */ }
+
+  // Reset inactive partner state then issue strike
+  await Queue.deleteOne({ telegramId: inactivePartnerId });
+  await User.updateOne(
+    { telegramId: inactivePartnerId },
+    { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null },
+  );
+  await issueNoResponseStrike(bot, inactivePartnerId);
+}
+
 async function handleMatchExpiry(
   bot: Telegraf,
   matchId: string,
@@ -221,6 +326,10 @@ async function handleMatchExpiry(
     if (!user) continue;
     const activeStates = ["in_match", "awaiting_proof", "awaiting_partner_approval"];
     if (!activeStates.includes(user.state)) continue;
+    // Clear any pending proof timer for this user in this match
+    const proofTimerKey = `proof:${matchId}:${uid}`;
+    const existingProofTimer = proofTimers.get(proofTimerKey);
+    if (existingProofTimer) { clearTimeout(existingProofTimer); proofTimers.delete(proofTimerKey); }
     await Queue.deleteOne({ telegramId: uid });
     await User.updateOne(
       { telegramId: uid },
@@ -454,6 +563,12 @@ async function checkAndCompleteMatch(bot: Telegraf, matchId: string): Promise<vo
   if (existingTimer) {
     clearTimeout(existingTimer);
     matchTimers.delete(timerId);
+  }
+  // Clear any pending proof timers for both participants
+  for (const uid of [match.user1Id, match.user2Id]) {
+    const ptKey = `proof:${matchId}:${uid}`;
+    const pt = proofTimers.get(ptKey);
+    if (pt) { clearTimeout(pt); proofTimers.delete(ptKey); }
   }
 
   await Match.updateOne({ _id: matchId }, { status: "completed" });
@@ -1072,6 +1187,16 @@ export function createBot(): Telegraf {
       ...approveButtons,
     });
     console.log(`[PROOF_SENT_TO_PARTNER] telegramId=${telegramId} proof forwarded to partnerId=${partnerId} for matchId=${matchId}.`);
+
+    // Start 4-minute no-response timeout — if partner doesn't approve/reject, punish them
+    const proofTimerKey = `proof:${matchId}:${telegramId}`;
+    if (proofTimers.has(proofTimerKey)) clearTimeout(proofTimers.get(proofTimerKey)!);
+    const proofTimer = setTimeout(async () => {
+      proofTimers.delete(proofTimerKey);
+      await handleProofTimeout(bot, matchId, telegramId, partnerId);
+    }, NO_RESPONSE_TIMEOUT_MS);
+    proofTimers.set(proofTimerKey, proofTimer);
+    console.log(`[NO_RESPONSE_TIMEOUT_STARTED] matchId=${matchId} proofOwnerId=${telegramId} inactivePartnerId=${partnerId} — 4-min timer started.`);
   });
 
   bot.on(message("text"), async (ctx) => {
@@ -1361,6 +1486,10 @@ export function createBot(): Telegraf {
     const timerId = match._id.toString();
     const existingTimer = matchTimers.get(timerId);
     if (existingTimer) { clearTimeout(existingTimer); matchTimers.delete(timerId); }
+    // Clear proof timer for the proof owner so no-response timeout doesn't fire
+    const ptKey = `proof:${timerId}:${proofOwnerId}`;
+    const existingProofTimer = proofTimers.get(ptKey);
+    if (existingProofTimer) { clearTimeout(existingProofTimer); proofTimers.delete(ptKey); }
 
     // Apply 24h cooldown to the proof owner (User A — the one whose proof was rejected)
     const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);
