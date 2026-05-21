@@ -136,13 +136,25 @@ async function notifyQueueUsers(
     ],
   });
 
-  console.log(`[QUEUE] @${newUserTikTok} joined queue. Notifying ${eligibleUsers.length} eligible user(s).`);
-  if (eligibleUsers.length === 0) {
+  const filtered = await Promise.all(
+    eligibleUsers.map(async (u) => {
+      const recent = await hasRecentMatch(u.telegramId, newUserTelegramId);
+      if (recent) {
+        console.log(`[NOTIFICATION_SKIPPED_RECENT_PAIR] Skipping notification to telegramId=${u.telegramId} — recent match with telegramId=${newUserTelegramId}`);
+        return null;
+      }
+      return u;
+    })
+  );
+  const usersToNotify = filtered.filter(Boolean);
+
+  console.log(`[QUEUE] @${newUserTikTok} joined queue. Notifying ${usersToNotify.length}/${eligibleUsers.length} eligible user(s) (${eligibleUsers.length - usersToNotify.length} skipped — recent pair).`);
+  if (usersToNotify.length === 0) {
     console.log(`[QUEUE] Queue empty — no eligible users to notify for @${newUserTikTok}.`);
   }
 
   let sentCount = 0;
-  for (const u of eligibleUsers) {
+  for (const u of usersToNotify) {
     try {
       await bot.telegram.sendMessage(
         u.telegramId,
@@ -156,7 +168,7 @@ async function notifyQueueUsers(
       console.error(`[NOTIFY] Failed to notify telegramId=${u.telegramId}: ${(err as Error).message}`);
     }
   }
-  console.log(`[NOTIFY] Notifications sent: ${sentCount}/${eligibleUsers.length}`);
+  console.log(`[NOTIFY] Notifications sent: ${sentCount}/${usersToNotify.length}`);
 }
 
 async function checkSuspension(telegramId: number): Promise<{ suspended: boolean; message: string }> {
@@ -220,15 +232,12 @@ async function handleMatchExpiry(
   matchTimers.delete(matchId);
 }
 
-async function hasCooldown(userIdA: number, userIdB: number): Promise<boolean> {
+async function hasRecentMatch(userIdA: number, userIdB: number): Promise<boolean> {
   const since = new Date(Date.now() - COOLDOWN_MS);
   const pairKey = [userIdA, userIdB].sort((a, b) => a - b).join(":");
-  const existing = await MatchHistory.findOne({
-    pairKey,
-    matchedAt: { $gte: since },
-  });
+  const existing = await MatchHistory.findOne({ pairKey, matchedAt: { $gte: since } });
   if (!existing) {
-    console.log(`[REMATCH_ALLOWED_AFTER_24H] pairKey=${pairKey} — no recent match found, pair is eligible.`);
+    console.log(`[REMATCH_ALLOWED_AFTER_24H] pairKey=${pairKey} — eligible.`);
   }
   return existing !== null;
 }
@@ -276,10 +285,10 @@ async function tryMatch(bot: Telegraf): Promise<boolean> {
       }
 
       // Check 24h cooldown between this pair
-      const onCooldown = await hasCooldown(entryA.telegramId, entryB.telegramId);
+      const onCooldown = await hasRecentMatch(entryA.telegramId, entryB.telegramId);
       if (onCooldown) {
-        console.log(`[RECENT_PAIR_BLOCKED] Pair telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId} matched within last 24h — skipping, trying next pair.`);
-        console.log(`[NEXT_PARTNER_SEARCH] Continuing search for other eligible partners...`);
+        console.log(`[RECENT_PAIR_BLOCKED] telegramId=${entryA.telegramId} & ${entryB.telegramId} — skipping, trying next pair.`);
+        console.log(`[NEXT_PARTNER_SEARCH] Searching for other eligible partners...`);
         continue;
       }
 
