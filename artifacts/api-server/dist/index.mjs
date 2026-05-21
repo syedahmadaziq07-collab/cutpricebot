@@ -42694,6 +42694,45 @@ _(Max balance: ${MAX_CUT_BALANCE} cuts per account)_`,
     ].join("\n");
     await ctx.reply(report, { parse_mode: "Markdown" });
   });
+  bot.command("broadcast", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const text = ctx.message.text.replace(/^\/broadcast\s*/i, "").trim();
+    if (!text) {
+      await ctx.reply("\u2139\uFE0F Usage: `/broadcast <your message>`\n\nThe message will be sent to all registered users.", { parse_mode: "Markdown" });
+      return;
+    }
+    const users = await User.find({ tiktokUsername: { $ne: "__pending__" }, isBanned: false }).select("telegramId");
+    if (users.length === 0) {
+      await ctx.reply("\u26A0\uFE0F No registered users found.");
+      return;
+    }
+    const statusMsg = await ctx.reply(`\u{1F4E1} Sending to ${users.length} user(s)\u2026`);
+    let sent = 0;
+    let failed = 0;
+    for (const u of users) {
+      try {
+        await bot.telegram.sendMessage(u.telegramId, text);
+        sent++;
+      } catch {
+        failed++;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await bot.telegram.editMessageText(
+      ctx.chat.id,
+      statusMsg.message_id,
+      void 0,
+      `\u2705 Broadcast complete!
+
+\u{1F4E8} Sent: ${sent}
+\u274C Failed: ${failed}
+\u{1F465} Total: ${users.length}`
+    );
+    console.log(`[BROADCAST] adminId=${ctx.from.id} \u2014 sent=${sent} failed=${failed} total=${users.length}`);
+  });
   bot.command("status", async (ctx) => {
     const user = await User.findOne({ telegramId: ctx.from.id });
     if (!user || user.tiktokUsername === "__pending__") {
