@@ -804,21 +804,30 @@ export function createBot(): Telegraf {
 
     // Admin notification — only for brand-new users, never for returning __pending__ users
     if (isNewUser) {
-      const joinedAt = new Date().toUTCString().replace("GMT", "UTC");
+      const joinedAt = new Date().toLocaleString("en-MY", {
+        timeZone: "Asia/Kuala_Lumpur",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      });
       const displayName = ctx.from.first_name ?? "Unknown";
       const displayUsername = ctx.from.username ? `@${ctx.from.username}` : "No username";
       const totalUsers = await User.countDocuments();
 
       const adminMsg =
-        `👤 NEW CUSTOMER JOINED!\n` +
+        `👤 NEW USER JOINED!\n` +
         `━━━━━━━━━━━━━━━━━━\n` +
+        `• User Number: #${totalUsers}\n` +
         `• Name: ${displayName}\n` +
         `• Username: ${displayUsername}\n` +
         `• ID: ${telegramId}\n` +
-        `• Joined At: ${joinedAt}\n` +
-        `• User Number: #${totalUsers}\n` +
+        `• Time: ${joinedAt} MYT\n` +
         `━━━━━━━━━━━━━━━━━━\n` +
-        `🆕 New user unlocked ✨`;
+        `🆕 A new user just joined CutPricebot ✨`;
 
       for (const adminId of getAdminIds()) {
         try {

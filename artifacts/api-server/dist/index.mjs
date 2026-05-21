@@ -43744,19 +43744,28 @@ Drop your TikTok cut price link below to start swapping \u{1F517}\u2728`,
       { upsert: true, new: true }
     );
     if (isNewUser) {
-      const joinedAt = (/* @__PURE__ */ new Date()).toUTCString().replace("GMT", "UTC");
+      const joinedAt = (/* @__PURE__ */ new Date()).toLocaleString("en-MY", {
+        timeZone: "Asia/Kuala_Lumpur",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      });
       const displayName = ctx.from.first_name ?? "Unknown";
       const displayUsername = ctx.from.username ? `@${ctx.from.username}` : "No username";
       const totalUsers = await User.countDocuments();
-      const adminMsg = `\u{1F464} NEW CUSTOMER JOINED!
+      const adminMsg = `\u{1F464} NEW USER JOINED!
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+\u2022 User Number: #${totalUsers}
 \u2022 Name: ${displayName}
 \u2022 Username: ${displayUsername}
 \u2022 ID: ${telegramId}
-\u2022 Joined At: ${joinedAt}
-\u2022 User Number: #${totalUsers}
+\u2022 Time: ${joinedAt} MYT
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-\u{1F195} New user unlocked \u2728`;
+\u{1F195} A new user just joined CutPricebot \u2728`;
       for (const adminId of getAdminIds()) {
         try {
           await bot.telegram.sendMessage(adminId, adminMsg);
