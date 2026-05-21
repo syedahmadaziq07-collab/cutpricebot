@@ -2,6 +2,7 @@ import { Telegraf, Markup } from "telegraf";
 import { message } from "telegraf/filters";
 import { User } from "./models/user";
 import { Match } from "./models/match";
+import { MatchHistory } from "./models/matchHistory";
 import { Referral } from "./models/referral";
 import { logger } from "../lib/logger";
 
@@ -180,31 +181,54 @@ async function handleMatchExpiry(
   matchTimers.delete(matchId);
 }
 
+const COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+async function hasCooldown(userIdA: number, userIdB: number): Promise<boolean> {
+  const since = new Date(Date.now() - COOLDOWN_MS);
+  const existing = await MatchHistory.findOne({
+    $or: [
+      { userIdA, userIdB },
+      { userIdA: userIdB, userIdB: userIdA },
+    ],
+    matchedAt: { $gte: since },
+  });
+  return existing !== null;
+}
+
 async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
   const currentUser = await User.findOne({ telegramId });
   if (!currentUser || currentUser.state !== "in_queue") return;
 
-  const alreadyMatchedIds = currentUser.sessionMatchedPartnerIds ?? [];
-  const excludeIds = [telegramId, ...alreadyMatchedIds];
-
-  const partner = await User.findOne({
-    telegramId: { $nin: excludeIds },
+  const candidates = await User.find({
+    telegramId: { $ne: telegramId },
     state: "in_queue",
     isBanned: false,
     $or: [{ suspendedUntil: null }, { suspendedUntil: { $lte: new Date() } }],
   }).sort({ queuedAt: 1 });
 
-  if (!partner) {
+  if (candidates.length === 0) {
     console.log(
-      `[MATCH] No partner found for @${currentUser.tiktokUsername} (telegramId=${telegramId}). Queue empty or all excluded.`,
+      `[MATCH] No candidates in queue for @${currentUser.tiktokUsername} (telegramId=${telegramId}).`,
     );
     return;
   }
 
-  const partnerAlreadyMatchedIds = partner.sessionMatchedPartnerIds ?? [];
-  if (partnerAlreadyMatchedIds.includes(telegramId)) {
+  let partner = null;
+  for (const candidate of candidates) {
+    const onCooldown = await hasCooldown(telegramId, candidate.telegramId);
+    if (onCooldown) {
+      console.log(
+        `[COOLDOWN] Pair skipped — @${currentUser.tiktokUsername} & @${candidate.tiktokUsername} matched within last 24h. Cooldown active.`,
+      );
+      continue;
+    }
+    partner = candidate;
+    break;
+  }
+
+  if (!partner) {
     console.log(
-      `[MATCH] Duplicate ignored — @${currentUser.tiktokUsername} & @${partner.tiktokUsername} already matched this session.`,
+      `[MATCH] No eligible partner for @${currentUser.tiktokUsername} — all candidates on 24h cooldown.`,
     );
     return;
   }
@@ -213,33 +237,34 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
     `[MATCH] Match created: @${currentUser.tiktokUsername} (telegramId=${telegramId}) <-> @${partner.tiktokUsername} (telegramId=${partner.telegramId})`,
   );
 
+  const now = new Date();
   const expiresAt = new Date(Date.now() + 4 * 60 * 1000);
-  const match = await Match.create({
-    user1Id: telegramId,
-    user2Id: partner.telegramId,
-    link1: currentUser.pendingLink ?? "",
-    link2: partner.pendingLink ?? "",
-    expiresAt,
-  });
 
-  await User.updateOne(
-    { telegramId },
-    {
-      state: "in_match",
-      lastMatchPartnerId: partner.telegramId,
-      queuedAt: null,
-      $addToSet: { sessionMatchedPartnerIds: partner.telegramId },
-    },
-  );
-  await User.updateOne(
-    { telegramId: partner.telegramId },
-    {
-      state: "in_match",
-      lastMatchPartnerId: telegramId,
-      queuedAt: null,
-      $addToSet: { sessionMatchedPartnerIds: telegramId },
-    },
-  );
+  const [match] = await Promise.all([
+    Match.create({
+      user1Id: telegramId,
+      user2Id: partner.telegramId,
+      link1: currentUser.pendingLink ?? "",
+      link2: partner.pendingLink ?? "",
+      expiresAt,
+    }),
+    MatchHistory.create({
+      userIdA: telegramId,
+      userIdB: partner.telegramId,
+      matchedAt: now,
+    }),
+  ]);
+
+  await Promise.all([
+    User.updateOne(
+      { telegramId },
+      { state: "in_match", lastMatchPartnerId: partner.telegramId, queuedAt: null },
+    ),
+    User.updateOne(
+      { telegramId: partner.telegramId },
+      { state: "in_match", lastMatchPartnerId: telegramId, queuedAt: null },
+    ),
+  ]);
 
   const matchId = (match._id as { toString(): string }).toString();
 
@@ -255,15 +280,13 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
     `Link cut partner:\n${currentUser.pendingLink}\n\n` +
     `Sila cut link partner anda dahulu 🤝`;
 
-  await bot.telegram.sendMessage(telegramId, msgForCurrentUser, {
-    parse_mode: "Markdown",
-  });
-  await bot.telegram.sendMessage(partner.telegramId, msgForPartner, {
-    parse_mode: "Markdown",
-  });
+  await Promise.all([
+    bot.telegram.sendMessage(telegramId, msgForCurrentUser, { parse_mode: "Markdown" }),
+    bot.telegram.sendMessage(partner.telegramId, msgForPartner, { parse_mode: "Markdown" }),
+  ]);
 
   const timer = setTimeout(async () => {
-    await handleMatchExpiry(bot, matchId, telegramId, partner.telegramId);
+    await handleMatchExpiry(bot, matchId, telegramId, partner!.telegramId);
   }, 4 * 60 * 1000);
 
   matchTimers.set(matchId, timer);
