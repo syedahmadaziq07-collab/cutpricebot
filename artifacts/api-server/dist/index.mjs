@@ -41599,7 +41599,8 @@ var userSchema = new mongoose2.Schema(
     isBanned: { type: Boolean, default: false },
     lastMatchPartnerId: { type: Number, default: null },
     state: { type: String, default: "idle" },
-    pendingLink: { type: String, default: null }
+    pendingLink: { type: String, default: null },
+    lastNotifiedAt: { type: Date, default: null }
   },
   { timestamps: true }
 );
@@ -41646,14 +41647,42 @@ function generateReferralCode() {
 function extractTikTokUsername(input) {
   const trimmed = input.trim();
   if (trimmed.startsWith("@")) return trimmed.slice(1);
-  const match = trimmed.match(/tiktok\.com\/@([a-zA-Z0-9._]+)/);
-  if (match) return match[1];
+  const match = trimmed.match(/(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@([a-zA-Z0-9._]+)/i);
+  if (match && match[1]) return match[1];
   return null;
 }
 function isValidTikTokLink(url) {
-  return /https?:\/\/(www\.)?(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\//i.test(
+  return /(?:https?:\/\/)?(?:www\.)?(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\//i.test(
     url
   );
+}
+async function notifyQueueUsers(bot, newUserTikTok, newUserTelegramId) {
+  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1e3);
+  const eligibleUsers = await User.find({
+    telegramId: { $ne: newUserTelegramId },
+    tiktokUsername: { $nin: ["__pending__", ""] },
+    isBanned: false,
+    $and: [
+      { $or: [{ suspendedUntil: null }, { suspendedUntil: { $lte: /* @__PURE__ */ new Date() } }] },
+      { $or: [{ lastNotifiedAt: null }, { lastNotifiedAt: { $lte: tenMinutesAgo } }] }
+    ]
+  });
+  console.log(`[QUEUE] @${newUserTikTok} joined queue. Notifying ${eligibleUsers.length} eligible user(s).`);
+  let sentCount = 0;
+  for (const u of eligibleUsers) {
+    try {
+      await bot.telegram.sendMessage(
+        u.telegramId,
+        `\u{1F514} *Pengguna baru sedang mencari partner cut!*\n\nUsername TikTok:\n@${newUserTikTok}\n\nBuka bot sekarang untuk mula swap cut price link \u{1F91D}`,
+        { parse_mode: "Markdown" }
+      );
+      await User.updateOne({ telegramId: u.telegramId }, { lastNotifiedAt: /* @__PURE__ */ new Date() });
+      sentCount++;
+    } catch (err) {
+      console.error(`[NOTIFY] Failed to notify telegramId=${u.telegramId}: ${err.message}`);
+    }
+  }
+  console.log(`[NOTIFY] Notifications sent: ${sentCount}/${eligibleUsers.length}`);
 }
 async function checkSuspension(telegramId) {
   const user = await User.findOne({ telegramId });
@@ -41969,8 +41998,10 @@ Status: ${statusMap[user.state] ?? user.state}`,
     const user = await User.findOne({ telegramId });
     if (!user || user.tiktokUsername === "__pending__") {
       if (user?.state === "awaiting_tiktok_profile") {
+        console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
         const username = extractTikTokUsername(text);
         if (!username) {
+          console.warn(`[TIKTOK] Username extraction failed for telegramId=${telegramId}, input="${text.slice(0, 100)}"`);
           await ctx.reply(
             "Hmm link tu tak valid la \u{1F615}\nHantar betul2 k \u2014 contoh:\nhttps://www.tiktok.com/@username"
           );
@@ -42033,8 +42064,10 @@ Sekarang hantar TikTok cut price link kau \u{1F447}`,
       return;
     }
     if (user.state === "awaiting_tiktok_profile") {
+      console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
       const username = extractTikTokUsername(text);
       if (!username) {
+        console.warn(`[TIKTOK] Username extraction failed for telegramId=${telegramId}, input="${text.slice(0, 100)}"`);
         await ctx.reply(
           "Link tu pelik sikit \u{1F615}\nHantar link profile TikTok betul k \u2014 contoh:\nhttps://www.tiktok.com/@username"
         );
@@ -42078,10 +42111,12 @@ ${refLink}`,
         { telegramId },
         { state: "in_queue", pendingLink: text }
       );
+      console.log(`[QUEUE] telegramId=${telegramId} (@${user.tiktokUsername}) joined the queue.`);
       await ctx.reply(
         "Secured! \u{1F512} Finding ur partner\u2026\n\n_(Kau dalam queue \u2014 bot tengah cari match sekarang)_",
         { parse_mode: "Markdown" }
       );
+      await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
       await tryMatch(bot, telegramId);
       return;
     }
