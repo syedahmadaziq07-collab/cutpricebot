@@ -14,6 +14,7 @@ export interface IUser extends Document {
   lastMatchPartnerId: number | null;
   state: string;
   pendingLink: string | null;
+  lastNotifiedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -33,6 +34,7 @@ const userSchema = new mongoose.Schema<IUser>(
     lastMatchPartnerId: { type: Number, default: null },
     state: { type: String, default: "idle" },
     pendingLink: { type: String, default: null },
+    lastNotifiedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

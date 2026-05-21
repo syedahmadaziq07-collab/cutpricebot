@@ -13,15 +13,79 @@ function generateReferralCode(): string {
 
 function extractTikTokUsername(input: string): string | null {
   const trimmed = input.trim();
+
   if (trimmed.startsWith("@")) return trimmed.slice(1);
-  const match = trimmed.match(/tiktok\.com\/@([a-zA-Z0-9._]+)/);
-  if (match) return match[1];
+
+  // Matches with or without protocol and www, strips query params
+  // e.g. https://www.tiktok.com/@user, tiktok.com/@user, www.tiktok.com/@user?r=1
+  const match = trimmed.match(
+    /(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@([a-zA-Z0-9._]+)/i,
+  );
+  if (match && match[1]) return match[1];
+
   return null;
 }
 
 function isValidTikTokLink(url: string): boolean {
-  return /https?:\/\/(www\.)?(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\//i.test(
+  return /(?:https?:\/\/)?(?:www\.)?(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\//i.test(
     url,
+  );
+}
+
+async function notifyQueueUsers(
+  bot: Telegraf,
+  newUserTikTok: string,
+  newUserTelegramId: number,
+): Promise<void> {
+  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+
+  const eligibleUsers = await User.find({
+    telegramId: { $ne: newUserTelegramId },
+    tiktokUsername: { $nin: ["__pending__", ""] },
+    isBanned: false,
+    $and: [
+      {
+        $or: [
+          { suspendedUntil: null },
+          { suspendedUntil: { $lte: new Date() } },
+        ],
+      },
+      {
+        $or: [
+          { lastNotifiedAt: null },
+          { lastNotifiedAt: { $lte: tenMinutesAgo } },
+        ],
+      },
+    ],
+  });
+
+  console.log(
+    `[QUEUE] @${newUserTikTok} joined queue. Notifying ${eligibleUsers.length} eligible user(s).`,
+  );
+
+  let sentCount = 0;
+
+  for (const u of eligibleUsers) {
+    try {
+      await bot.telegram.sendMessage(
+        u.telegramId,
+        `🔔 *Pengguna baru sedang mencari partner cut!*\n\nUsername TikTok:\n@${newUserTikTok}\n\nBuka bot sekarang untuk mula swap cut price link 🤝`,
+        { parse_mode: "Markdown" },
+      );
+      await User.updateOne(
+        { telegramId: u.telegramId },
+        { lastNotifiedAt: new Date() },
+      );
+      sentCount++;
+    } catch (err) {
+      console.error(
+        `[NOTIFY] Failed to notify telegramId=${u.telegramId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  console.log(
+    `[NOTIFY] Notifications sent: ${sentCount}/${eligibleUsers.length}`,
   );
 }
 
@@ -394,8 +458,10 @@ export function createBot(): Telegraf {
 
     if (!user || user.tiktokUsername === "__pending__") {
       if (user?.state === "awaiting_tiktok_profile") {
+        console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
         const username = extractTikTokUsername(text);
         if (!username) {
+          console.warn(`[TIKTOK] Username extraction failed for telegramId=${telegramId}, input="${text.slice(0, 100)}"`);
           await ctx.reply(
             "Hmm link tu tak valid la 😕\nHantar betul2 k — contoh:\nhttps://www.tiktok.com/@username",
           );
@@ -455,8 +521,10 @@ export function createBot(): Telegraf {
     }
 
     if (user.state === "awaiting_tiktok_profile") {
+      console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
       const username = extractTikTokUsername(text);
       if (!username) {
+        console.warn(`[TIKTOK] Username extraction failed for telegramId=${telegramId}, input="${text.slice(0, 100)}"`);
         await ctx.reply(
           "Link tu pelik sikit 😕\nHantar link profile TikTok betul k — contoh:\nhttps://www.tiktok.com/@username",
         );
@@ -499,11 +567,14 @@ export function createBot(): Telegraf {
         { state: "in_queue", pendingLink: text },
       );
 
+      console.log(`[QUEUE] telegramId=${telegramId} (@${user.tiktokUsername}) joined the queue.`);
+
       await ctx.reply(
         "Secured! 🔒 Finding ur partner…\n\n_(Kau dalam queue — bot tengah cari match sekarang)_",
         { parse_mode: "Markdown" },
       );
 
+      await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
       await tryMatch(bot, telegramId);
       return;
     }
