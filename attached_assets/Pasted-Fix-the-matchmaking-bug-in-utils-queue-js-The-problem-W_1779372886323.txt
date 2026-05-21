@@ -1,0 +1,166 @@
+Fix the matchmaking bug in utils/queue.js
+
+The problem: When User A enters queue, then User B submits a link, they don’t get matched. Both end up stuck in queue. tryMatch() is not triggering correctly.
+
+Replace the entire utils/queue.js with this fixed version:
+
+```javascript
+const User = require('../models/User');
+const Link = require('../models/Link');
+const Match = require('../models/Match');
+const Queue = require('../models/Queue');
+const { v4: uuidv4 } = require('uuid');
+
+const timers = {};
+
+async function addToQueue(telegramId, linkId, bot) {
+  // Remove user from queue if already there
+  await Queue.deleteOne({ telegramId });
+
+  // Add fresh entry
+  await Queue.create({ telegramId, linkId, createdAt: new Date() });
+
+  console.log(`[QUEUE] ${telegramId} added. Checking for match...`);
+
+  // Small delay to make sure DB write is committed before reading
+  await new Promise(res => setTimeout(res, 300));
+
+  await tryMatch(bot);
+}
+
+async function tryMatch(bot) {
+  // Find 2 different users waiting in queue, oldest first
+  const entries = await Queue.find().sort({ createdAt: 1 }).limit(10);
+
+  console.log(`[QUEUE] Current queue size: ${entries.length}`);
+
+  if (entries.length < 2) return;
+
+  // Pick first two with different telegramId
+  let userAData = null;
+  let userBData = null;
+
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      if (entries[i].telegramId !== entries[j].telegramId) {
+        userAData = entries[i];
+        userBData = entries[j];
+        break;
+      }
+    }
+    if (userAData) break;
+  }
+
+  if (!userAData || !userBData) {
+    console.log(`[QUEUE] Not enough different users to match`);
+    return;
+  }
+
+  console.log(`[QUEUE] Matching ${userAData.telegramId} with ${userBData.telegramId}`);
+
+  // Remove both from queue atomically
+  await Queue.deleteMany({
+    telegramId: { $in: [userAData.telegramId, userBData.telegramId] }
+  });
+
+  await createMatch(
+    { telegramId: String(userAData.telegramId), linkId: String(userAData.linkId) },
+    { telegramId: String(userBData.telegramId), linkId: String(userBData.linkId) },
+    bot
+  );
+}
+
+async function createMatch(userAData, userBData, bot) {
+  const matchId = uuidv4();
+
+  try {
+    const match = new Match({
+      matchId,
+      userA: userAData.telegramId,
+      userB: userBData.telegramId,
+      linkA: userAData.linkId,
+      linkB: userBData.linkId,
+      status: 'swapping',
+      timerStart: new Date()
+    });
+    await match.save();
+
+    await User.updateOne({ telegramId: userAData.telegramId }, { inQueue: false, currentMatchId: matchId });
+    await User.updateOne({ telegramId: userBData.telegramId }, { inQueue: false, currentMatchId: matchId });
+
+    const linkA = await Link.findById(userAData.linkId);
+    const linkB = await Link.findById(userBData.linkId);
+    const userA = await User.findOne({ telegramId: userAData.telegramId });
+    const userB = await User.findOne({ telegramId: userBData.telegramId });
+
+    if (!linkA || !linkB || !userA || !userB) {
+      console.error(`[MATCH] Missing data — linkA:${!!linkA} linkB:${!!linkB} userA:${!!userA} userB:${!!userB}`);
+      return;
+    }
+
+    await bot.telegram.sendMessage(
+      userAData.telegramId,
+      `Partner found! 🎯 Ni link dia 👇\n\n${linkB.link}\n\nTap kat TikTok pastu screenshot list yang ada @${userB.tiktokUsername} k! Kau ada 4 minit ⏳`
+    );
+
+    await bot.telegram.sendMessage(
+      userBData.telegramId,
+      `Partner found! 🎯 Ni link dia 👇\n\n${linkA.link}\n\nTap kat TikTok pastu screenshot list yang ada @${userA.tiktokUsername} k! Kau ada 4 minit ⏳`
+    );
+
+    console.log(`[MATCH] Created matchId: ${matchId}`);
+
+    // 4 min ghost timer
+    timers[matchId] = setTimeout(async () => {
+      await handleGhost(matchId, userAData, userBData, bot);
+    }, 4 * 60 * 1000);
+
+  } catch (err) {
+    console.error(`[MATCH] Error creating match:`, err);
+  }
+}
+
+async function handleGhost(matchId, userAData, userBData, bot) {
+  const match = await Match.findOne({ matchId });
+  if (!match || match.status === 'done') return;
+
+  if (!match.screenshotA) {
+    await bot.telegram.sendMessage(userAData.telegramId, `Partner ghosted 💀 Finding someone else...`);
+    await addToQueue(userAData.telegramId, userAData.linkId, bot);
+  }
+
+  if (!match.screenshotB) {
+    await bot.telegram.sendMessage(userBData.telegramId, `Partner ghosted 💀 Finding someone else...`);
+    await addToQueue(userBData.telegramId, userBData.linkId, bot);
+  }
+
+  await Match.updateOne({ matchId }, { status: 'failed' });
+  await User.updateOne({ telegramId: userAData.telegramId }, { currentMatchId: null });
+  await User.updateOne({ telegramId: userBData.telegramId }, { currentMatchId: null });
+}
+
+function clearTimer(matchId) {
+  if (timers[matchId]) {
+    clearTimeout(timers[matchId]);
+    delete timers[matchId];
+  }
+}
+
+module.exports = { addToQueue, clearTimer };
+```
+
+Also make sure models/Queue.js exists with this content:
+
+```javascript
+const mongoose = require('mongoose');
+
+const queueSchema = new mongoose.Schema({
+  telegramId: { type: String, unique: true, required: true },
+  linkId: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+module.exports = mongoose.model('Queue', queueSchema);
+```
+
+After replacing both files, restart the bot.

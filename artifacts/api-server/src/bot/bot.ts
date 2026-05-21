@@ -4,13 +4,14 @@ import { User } from "./models/user";
 import { Match } from "./models/match";
 import { MatchHistory } from "./models/matchHistory";
 import { Referral } from "./models/referral";
+import { Queue } from "./models/queue";
 import { logger } from "../lib/logger";
 
 export async function cleanupStaleQueue(): Promise<void> {
   const now = new Date();
   const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60 * 1000);
 
-  // MIGRATION: rename legacy state value "in_queue" → "inqueue" across all documents
+  // MIGRATION: rename legacy state value "in_queue" → "inqueue" across all User documents
   const migrationResult = await User.updateMany(
     { state: "in_queue" },
     { $set: { state: "inqueue" } },
@@ -19,16 +20,16 @@ export async function cleanupStaleQueue(): Promise<void> {
     console.log(`[STARTUP_CLEANUP] MIGRATION: renamed state "in_queue" → "inqueue" for ${migrationResult.modifiedCount} user(s).`);
   }
 
-  // Fix: inqueue but no pendingLink → cannot be matched, reset isWaiting
+  // Fix: inqueue users with no pendingLink → reset (they can't be matched)
   const nolinkResult = await User.updateMany(
     { state: "inqueue", $or: [{ pendingLink: null }, { pendingLink: "" }] },
     { $set: { isWaiting: false, state: "awaiting_cut_link", queuedAt: null } },
   );
   if (nolinkResult.modifiedCount > 0) {
-    console.log(`[STARTUP_CLEANUP] Reset ${nolinkResult.modifiedCount} user(s) stuck inqueue with no pendingLink → state=awaiting_cut_link, isWaiting=false`);
+    console.log(`[STARTUP_CLEANUP] Reset ${nolinkResult.modifiedCount} user(s) stuck inqueue with no pendingLink → awaiting_cut_link.`);
   }
 
-  // Fix: stuck inqueue for more than 30 minutes → clear queue
+  // Fix: users stuck inqueue for more than 30 minutes → reset
   const staleResult = await User.updateMany(
     { state: "inqueue", queuedAt: { $lte: thirtyMinutesAgo } },
     { $set: { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null } },
@@ -37,11 +38,30 @@ export async function cleanupStaleQueue(): Promise<void> {
     console.log(`[STARTUP_CLEANUP] Cleared ${staleResult.modifiedCount} user(s) stuck inqueue for >30 minutes.`);
   }
 
-  // Log final queue state after cleanup
-  const remaining = await User.find({ state: "inqueue", isWaiting: true }).select("telegramId telegramUsername tiktokUsername isWaiting queuedAt pendingLink");
-  console.log(`[STARTUP_CLEANUP] Queue state after cleanup: ${remaining.length} user(s) in queue.`);
-  for (const u of remaining) {
-    console.log(`  → telegramId=${u.telegramId} (@${u.tiktokUsername}) isWaiting=${u.isWaiting} queuedAt=${u.queuedAt?.toISOString() ?? "null"} pendingLink=${u.pendingLink ? "SET" : "NONE"}`);
+  // Rebuild Queue collection to match current User state
+  // Remove Queue entries for users no longer inqueue
+  const inqueueIds = (await User.find({ state: "inqueue" }).select("telegramId")).map(u => u.telegramId);
+  const orphanResult = await Queue.deleteMany({ telegramId: { $nin: inqueueIds } });
+  if (orphanResult.deletedCount > 0) {
+    console.log(`[STARTUP_CLEANUP] Removed ${orphanResult.deletedCount} orphaned Queue entries (user no longer inqueue).`);
+  }
+
+  // Add Queue entries for inqueue users who are missing from Queue collection
+  const queuedUsers = await User.find({ state: "inqueue", pendingLink: { $nin: [null, ""] } })
+    .select("telegramId pendingLink queuedAt");
+  for (const u of queuedUsers) {
+    const exists = await Queue.findOne({ telegramId: u.telegramId });
+    if (!exists) {
+      await Queue.create({ telegramId: u.telegramId, pendingLink: u.pendingLink!, createdAt: u.queuedAt ?? new Date() });
+      console.log(`[STARTUP_CLEANUP] Restored missing Queue entry for telegramId=${u.telegramId}.`);
+    }
+  }
+
+  // Log final queue state
+  const remaining = await Queue.find().sort({ createdAt: 1 });
+  console.log(`[STARTUP_CLEANUP] Queue after cleanup: ${remaining.length} user(s).`);
+  for (const q of remaining) {
+    console.log(`  → telegramId=${q.telegramId} pendingLink=${q.pendingLink ? "SET" : "NULL"} createdAt=${q.createdAt.toISOString()}`);
   }
 }
 
@@ -188,12 +208,12 @@ async function handleMatchExpiry(
     if (!user) continue;
     const activeStates = ["in_match", "awaiting_proof", "awaiting_partner_approval"];
     if (!activeStates.includes(user.state)) continue;
+    await Queue.deleteOne({ telegramId: uid });
     await User.updateOne(
       { telegramId: uid },
       { state: "awaiting_cut_link", pendingLink: null, isWaiting: false, queuedAt: null },
     );
     console.log(`[QUEUE_REMOVE] telegramId=${uid} removed from queue (match expired).`);
-    console.log(`[WAITING_CLEARED] isWaiting=false, queuedAt=null set for telegramId=${uid} (expiry).`);
     await bot.telegram.sendMessage(uid, expireMsg);
   }
   matchTimers.delete(matchId);
@@ -208,168 +228,136 @@ async function hasCooldown(userIdA: number, userIdB: number): Promise<boolean> {
   return existing !== null;
 }
 
-// Returns true if a match was created, false if no eligible partner was found.
-// IMPORTANT: caller must NOT have set current user to inqueue yet.
-// The correct flow is: save pendingLink → tryMatch → if false, THEN join queue.
-async function tryMatch(bot: Telegraf, telegramId: number): Promise<boolean> {
-  const currentUser = await User.findOne({ telegramId });
-  if (!currentUser) {
-    console.log(`[MATCH_ATTEMPT] telegramId=${telegramId} not found in DB. Aborting.`);
-    return false;
+// Scan the Queue collection for the first eligible pair and create a match.
+// Returns true if a match was created.
+async function tryMatch(bot: Telegraf): Promise<boolean> {
+  const entries = await Queue.find().sort({ createdAt: 1 }).limit(50);
+
+  console.log(`[MATCH_ATTEMPT] ─── tryMatch called — Queue size: ${entries.length} ───`);
+  for (const e of entries) {
+    console.log(`  → telegramId=${e.telegramId} pendingLink=${e.pendingLink ? "SET" : "NULL"} createdAt=${e.createdAt.toISOString()}`);
   }
 
-  console.log(
-    `[MATCH_ATTEMPT] ─── tryMatch called ───\n` +
-    `  currentUser.telegramId  = ${currentUser.telegramId}\n` +
-    `  currentUser.username    = @${currentUser.tiktokUsername}\n` +
-    `  currentUser.state       = ${currentUser.state}\n` +
-    `  currentUser.isWaiting   = ${currentUser.isWaiting}\n` +
-    `  currentUser.pendingLink = ${currentUser.pendingLink ? `"${currentUser.pendingLink}"` : "NULL"}`,
-  );
-
-  // Safety: if current user is inqueue but has no pendingLink, they can't match — reset them
-  if (currentUser.state === "inqueue" && !currentUser.pendingLink) {
-    console.log(`[MATCH_ATTEMPT] STALE_QUEUE_DETECTED — telegramId=${telegramId} is inqueue with no pendingLink. Resetting to awaiting_cut_link.`);
-    await User.updateOne({ telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+  if (entries.length < 2) {
+    console.log(`[MATCH_ATTEMPT] Not enough users in queue to match.`);
     return false;
-  }
-
-  if (currentUser.state === "inqueue") {
-    // Already queued — this call came from wakeQueueForNewUser
-    console.log(`[MATCH_ATTEMPT] telegramId=${telegramId} is already inqueue — scanning for partner.`);
-  } else {
-    // Pre-queue check — user has not been added to queue yet
-    console.log(`[MATCH_ATTEMPT] telegramId=${telegramId} (@${currentUser.tiktokUsername}) — checking for partner before joining queue.`);
   }
 
   const now = new Date();
 
-  // Build and log the exact query used to find partners
-  const partnerQuery = {
-    telegramId: { $ne: telegramId },
-    state: "inqueue",
-    isWaiting: true,
-    isBanned: false,
-    $or: [{ suspendedUntil: null }, { suspendedUntil: { $lte: now } }],
-  };
-  console.log(`[MATCH_ATTEMPT] Partner query: ${JSON.stringify(partnerQuery)}`);
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      const entryA = entries[i];
+      const entryB = entries[j];
 
-  // Find earliest waiting user, excluding self
-  const candidates = await User.find(partnerQuery).sort({ queuedAt: 1 });
+      if (entryA.telegramId === entryB.telegramId) continue;
 
-  console.log(`[MATCH_ATTEMPT] Waiting partners found: ${candidates.length}`);
-  if (candidates.length > 0) {
-    for (const c of candidates) {
-      console.log(
-        `  → telegramId=${c.telegramId} (@${c.tiktokUsername}) state=${c.state} isWaiting=${c.isWaiting} queuedAt=${c.queuedAt?.toISOString() ?? "null"} pendingLink=${c.pendingLink ? "SET" : "NULL"}`,
-      );
+      // Check suspension for both
+      const [susA, susB] = await Promise.all([
+        checkSuspension(entryA.telegramId),
+        checkSuspension(entryB.telegramId),
+      ]);
+      if (susA.suspended) {
+        console.log(`[MATCH_ATTEMPT] telegramId=${entryA.telegramId} is suspended — removing from queue.`);
+        await Queue.deleteOne({ telegramId: entryA.telegramId });
+        await User.updateOne({ telegramId: entryA.telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+        return tryMatch(bot);
+      }
+      if (susB.suspended) {
+        console.log(`[MATCH_ATTEMPT] telegramId=${entryB.telegramId} is suspended — removing from queue.`);
+        await Queue.deleteOne({ telegramId: entryB.telegramId });
+        await User.updateOne({ telegramId: entryB.telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+        return tryMatch(bot);
+      }
+
+      // Check 24h cooldown between this pair
+      const onCooldown = await hasCooldown(entryA.telegramId, entryB.telegramId);
+      if (onCooldown) {
+        console.log(`[COOLDOWN] Pair skipped: telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId} matched within last 24h.`);
+        continue;
+      }
+
+      console.log(`[MATCH_ATTEMPT] Eligible pair found: telegramId=${entryA.telegramId} & telegramId=${entryB.telegramId}. Removing from queue...`);
+
+      // Atomically remove both from Queue
+      const deleted = await Queue.deleteMany({
+        telegramId: { $in: [entryA.telegramId, entryB.telegramId] },
+      });
+      if (deleted.deletedCount < 2) {
+        // Race condition — one was claimed by a concurrent tryMatch, retry
+        console.log(`[MATCH_ATTEMPT] Race condition on Queue delete (deleted=${deleted.deletedCount}). Retrying.`);
+        return tryMatch(bot);
+      }
+
+      // Update both users to in_match
+      await Promise.all([
+        User.updateOne({ telegramId: entryA.telegramId }, { state: "in_match", isWaiting: false, queuedAt: null, lastMatchPartnerId: entryB.telegramId }),
+        User.updateOne({ telegramId: entryB.telegramId }, { state: "in_match", isWaiting: false, queuedAt: null, lastMatchPartnerId: entryA.telegramId }),
+      ]);
+
+      const [userA, userB] = await Promise.all([
+        User.findOne({ telegramId: entryA.telegramId }),
+        User.findOne({ telegramId: entryB.telegramId }),
+      ]);
+
+      const expiresAt = new Date(now.getTime() + 4 * 60 * 1000);
+      const [match] = await Promise.all([
+        Match.create({
+          user1Id: entryA.telegramId,
+          user2Id: entryB.telegramId,
+          link1: entryA.pendingLink,
+          link2: entryB.pendingLink,
+          expiresAt,
+        }),
+        MatchHistory.create({ userIdA: entryA.telegramId, userIdB: entryB.telegramId, matchedAt: now }),
+      ]);
+
+      const matchId = (match._id as { toString(): string }).toString();
+      console.log(`[MATCH_CREATED] matchId=${matchId} | userA=${entryA.telegramId} (@${userA?.tiktokUsername}) link="${entryA.pendingLink}" | userB=${entryB.telegramId} (@${userB?.tiktokUsername}) link="${entryB.pendingLink}"`);
+
+      const matchButtons = Markup.inlineKeyboard([
+        Markup.button.callback("✅ Done Cut", "done_cut"),
+        Markup.button.callback("❌ Cancel Match (24h cooldown)", "cancel_match"),
+      ]);
+
+      await Promise.all([
+        bot.telegram.sendMessage(entryA.telegramId,
+          `✅ *Partner dijumpai!*\n\nPartner anda:\n@${userB?.tiktokUsername}\n\nLink cut partner:\n${entryB.pendingLink}\n\nSila cut link partner anda dahulu 🤝`,
+          { parse_mode: "Markdown", ...matchButtons }),
+        bot.telegram.sendMessage(entryB.telegramId,
+          `✅ *Partner dijumpai!*\n\nPartner anda:\n@${userA?.tiktokUsername}\n\nLink cut partner:\n${entryA.pendingLink}\n\nSila cut link partner anda dahulu 🤝`,
+          { parse_mode: "Markdown", ...matchButtons }),
+      ]);
+
+      const timer = setTimeout(async () => {
+        await handleMatchExpiry(bot, matchId, entryA.telegramId, entryB.telegramId);
+      }, 4 * 60 * 1000);
+      matchTimers.set(matchId, timer);
+
+      return true;
     }
   }
 
-  if (candidates.length === 0) {
-    return false;
-  }
-
-  for (const candidate of candidates) {
-    const onCooldown = await hasCooldown(telegramId, candidate.telegramId);
-    if (onCooldown) {
-      console.log(`[COOLDOWN] Pair skipped — @${currentUser.tiktokUsername} (id=${telegramId}) & @${candidate.tiktokUsername} (id=${candidate.telegramId}) matched within last 24h.`);
-      continue;
-    }
-
-    console.log(`[WAITING_PARTNER_FOUND] telegramId=${telegramId} (@${currentUser.tiktokUsername}) found waiting partner telegramId=${candidate.telegramId} (@${candidate.tiktokUsername}).`);
-
-    // ATOMIC: claim partner — only succeeds if they are still waiting inqueue
-    const claimedPartner = await User.findOneAndUpdate(
-      { telegramId: candidate.telegramId, state: "inqueue", isWaiting: true },
-      { $set: { state: "in_match", lastMatchPartnerId: telegramId, isWaiting: false, queuedAt: null } },
-      { new: true },
-    );
-    if (!claimedPartner) {
-      console.log(`[MATCH_ATTEMPT] Partner telegramId=${candidate.telegramId} was already claimed concurrently. Trying next.`);
-      continue;
-    }
-
-    // Set current user to in_match
-    await User.updateOne(
-      { telegramId },
-      { state: "in_match", lastMatchPartnerId: candidate.telegramId, isWaiting: false, queuedAt: null },
-    );
-
-    const expiresAt = new Date(now.getTime() + 4 * 60 * 1000);
-
-    const [match] = await Promise.all([
-      Match.create({
-        user1Id: telegramId,
-        user2Id: candidate.telegramId,
-        link1: currentUser.pendingLink ?? "",
-        link2: candidate.pendingLink ?? "",
-        expiresAt,
-      }),
-      MatchHistory.create({ userIdA: telegramId, userIdB: candidate.telegramId, matchedAt: now }),
-    ]);
-
-    const matchId = (match._id as { toString(): string }).toString();
-
-    console.log(`[MATCH_CREATED] matchId=${matchId} | user1: telegramId=${telegramId} (@${currentUser.tiktokUsername}) link="${currentUser.pendingLink}" | user2: telegramId=${candidate.telegramId} (@${candidate.tiktokUsername}) link="${candidate.pendingLink}"`);
-    console.log(`[QUEUE_REMOVE] telegramId=${telegramId} (@${currentUser.tiktokUsername}) — matched, not in queue.`);
-    console.log(`[QUEUE_REMOVE] telegramId=${candidate.telegramId} (@${candidate.tiktokUsername}) — removed from queue after match.`);
-
-    const matchButtons = Markup.inlineKeyboard([
-      Markup.button.callback("✅ Done Cut", "done_cut"),
-      Markup.button.callback("❌ Cancel Match (24h cooldown)", "cancel_match"),
-    ]);
-
-    const msgForCurrentUser =
-      `✅ *Partner dijumpai!*\n\n` +
-      `Partner anda:\n@${candidate.tiktokUsername}\n\n` +
-      `Link cut partner:\n${candidate.pendingLink}\n\n` +
-      `Sila cut link partner anda dahulu 🤝`;
-
-    const msgForPartner =
-      `✅ *Partner dijumpai!*\n\n` +
-      `Partner anda:\n@${currentUser.tiktokUsername}\n\n` +
-      `Link cut partner:\n${currentUser.pendingLink}\n\n` +
-      `Sila cut link partner anda dahulu 🤝`;
-
-    await Promise.all([
-      bot.telegram.sendMessage(telegramId, msgForCurrentUser, { parse_mode: "Markdown", ...matchButtons }),
-      bot.telegram.sendMessage(candidate.telegramId, msgForPartner, { parse_mode: "Markdown", ...matchButtons }),
-    ]);
-
-    const timer = setTimeout(async () => {
-      await handleMatchExpiry(bot, matchId, telegramId, candidate.telegramId);
-    }, 4 * 60 * 1000);
-    matchTimers.set(matchId, timer);
-
-    return true;
-  }
-
-  console.log(`[MATCH_ATTEMPT] No eligible partner for telegramId=${telegramId} (@${currentUser.tiktokUsername}) after checking all ${candidates.length} candidate(s).`);
+  console.log(`[MATCH_ATTEMPT] No eligible pair found after checking all combinations.`);
   return false;
 }
 
-// Safety net: when current user just joined the queue and there are other
-// waiting users who ran tryMatch earlier with no candidates, wake them so
-// they can now match with the newly queued user.
-async function wakeQueueForNewUser(bot: Telegraf, newUserTelegramId: number): Promise<void> {
-  const waiting = await User.find({
-    telegramId: { $ne: newUserTelegramId },
-    state: "inqueue",
-    isWaiting: true,
-    isBanned: false,
-    $or: [{ suspendedUntil: null }, { suspendedUntil: { $lte: new Date() } }],
-  }).sort({ queuedAt: 1 });
+// Add a user to the Queue collection and immediately attempt a match.
+async function addToQueue(bot: Telegraf, telegramId: number, pendingLink: string): Promise<void> {
+  // Remove any stale entry first (idempotent)
+  await Queue.deleteOne({ telegramId });
+  // Insert fresh entry
+  const queuedAt = new Date();
+  await Queue.create({ telegramId, pendingLink, createdAt: queuedAt });
+  await User.updateOne({ telegramId }, { state: "inqueue", isWaiting: true, queuedAt, pendingLink });
 
-  if (waiting.length === 0) return;
+  const queueSize = await Queue.countDocuments();
+  console.log(`[QUEUE_ADD] telegramId=${telegramId} added. Queue size: ${queueSize}. Triggering tryMatch...`);
 
-  console.log(`[MATCH_ATTEMPT] wakeQueueForNewUser: ${waiting.length} existing queue user(s) re-attempting match with new user telegramId=${newUserTelegramId}.`);
+  // Small delay so the DB write is committed before we read it back in tryMatch
+  await new Promise<void>(res => setTimeout(res, 300));
 
-  for (const u of waiting) {
-    const alreadyMatched = (await User.findOne({ telegramId: u.telegramId }))?.state !== "inqueue";
-    if (alreadyMatched) continue;
-    await tryMatch(bot, u.telegramId);
-  }
+  await tryMatch(bot);
 }
 
 async function grantReferralReward(bot: Telegraf, referredUserId: number): Promise<void> {
@@ -566,29 +554,26 @@ export function createBot(): Telegraf {
     const telegramId = ctx.from.id;
     console.log(`[DEBUG_QUEUE] /debug_queue requested by telegramId=${telegramId}`);
 
-    const waiting = await User.find({
-      $or: [{ state: "inqueue" }, { isWaiting: true }],
-    }).select("telegramId telegramUsername tiktokUsername state isWaiting queuedAt pendingLink").sort({ queuedAt: 1 });
+    const queueEntries = await Queue.find().sort({ createdAt: 1 });
 
-    if (waiting.length === 0) {
-      await ctx.reply("✅ Queue is empty — no users with state=inqueue or isWaiting=true.");
+    if (queueEntries.length === 0) {
+      await ctx.reply("✅ Queue is empty — Queue collection has 0 entries.");
       return;
     }
 
-    const lines = waiting.map((u, i) => {
-      const age = u.queuedAt
-        ? `${Math.round((Date.now() - u.queuedAt.getTime()) / 1000)}s ago`
-        : "no queuedAt";
+    const lines = await Promise.all(queueEntries.map(async (q, i) => {
+      const age = `${Math.round((Date.now() - q.createdAt.getTime()) / 1000)}s ago`;
+      const u = await User.findOne({ telegramId: q.telegramId }).select("telegramUsername tiktokUsername state isWaiting");
       return (
-        `${i + 1}. telegramId=${u.telegramId}\n` +
-        `   @TG: ${u.telegramUsername || "?"} | @TT: ${u.tiktokUsername}\n` +
-        `   state=${u.state} | isWaiting=${u.isWaiting}\n` +
-        `   queuedAt: ${age}\n` +
-        `   pendingLink: ${u.pendingLink ? "SET" : "NULL"}`
+        `${i + 1}. telegramId=${q.telegramId}\n` +
+        `   @TG: ${u?.telegramUsername || "?"} | @TT: ${u?.tiktokUsername ?? "?"}\n` +
+        `   user.state=${u?.state ?? "?"} | user.isWaiting=${u?.isWaiting ?? "?"}\n` +
+        `   in Queue since: ${age}\n` +
+        `   pendingLink: ${q.pendingLink ? "SET" : "NULL"}`
       );
-    });
+    }));
 
-    const reply = `🔍 *Queue Debug (${waiting.length} user(s)):*\n\n` + lines.join("\n\n");
+    const reply = `🔍 *Queue Debug (${queueEntries.length} user(s)):*\n\n` + lines.join("\n\n");
     await ctx.reply(reply, { parse_mode: "Markdown" });
   });
 
@@ -818,44 +803,21 @@ export function createBot(): Telegraf {
         return;
       }
 
-      // ── PRE-SAVE diagnostic snapshot ──────────────────────────────────────
-      const freshUser = await User.findOne({ telegramId });
+      // Log diagnostic snapshot before queuing
       console.log(
         `[LINK_RECEIVED] ─── User sent cut link ───\n` +
         `  telegramId          = ${telegramId}\n` +
-        `  username            = @${freshUser?.tiktokUsername ?? "?"}\n` +
-        `  state (before)      = ${freshUser?.state ?? "?"}\n` +
-        `  isWaiting (before)  = ${freshUser?.isWaiting ?? "?"}\n` +
-        `  pendingLink (before)= ${freshUser?.pendingLink ? `"${freshUser.pendingLink}"` : "NULL"}`,
+        `  username            = @${user.tiktokUsername}\n` +
+        `  state (before)      = ${user.state}\n` +
+        `  isWaiting (before)  = ${user.isWaiting}\n` +
+        `  pendingLink (before)= ${user.pendingLink ? `"${user.pendingLink}"` : "NULL"}`,
       );
-
-      // Step 1: Save pending link ONLY — do NOT join queue yet
-      await User.updateOne({ telegramId }, { pendingLink: text });
-      console.log(`[LINK_RECEIVED] telegramId=${telegramId} (@${user.tiktokUsername}) saved pendingLink="${text}" — will attempt match before joining queue.`);
 
       await ctx.reply("Secured! 🔒 Finding ur partner…\n\n_(Kau dalam queue — bot tengah cari match sekarang)_", { parse_mode: "Markdown" });
 
-      // Step 2: Try to match with an existing waiting user
-      const matched = await tryMatch(bot, telegramId);
-      console.log(`[LINK_RECEIVED] tryMatch result for telegramId=${telegramId}: matched=${matched}`);
-
-      if (matched) {
-        // Match was created — current user is now in_match, no need to queue
-        return;
-      }
-
-      // Step 3: No partner found — only NOW join the queue
-      const now = new Date();
-      await User.updateOne({ telegramId }, { state: "inqueue", isWaiting: true, queuedAt: now });
-      const queueCount = await User.countDocuments({ state: "inqueue", isWaiting: true });
-      console.log(`[NO_PARTNER_FOUND_CURRENT_USER_QUEUED] telegramId=${telegramId} (@${user.tiktokUsername}) joined queue at ${now.toISOString()} | pendingLink="${text}" | queue size now: ${queueCount}`);
-
-      // Step 4: Notify others about the new queue entrant
+      // Notify other users, then add to Queue and attempt match
       await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
-
-      // Step 5: Safety net — wake any already-waiting users so they can try
-      //         matching with the newly queued user (handles concurrent joins)
-      await wakeQueueForNewUser(bot, telegramId);
+      await addToQueue(bot, telegramId, text);
       return;
     }
 
@@ -932,22 +894,22 @@ export function createBot(): Telegraf {
       { parse_mode: "Markdown" },
     );
 
+    await Queue.deleteOne({ telegramId });
+
     if (partner) {
-      const partnerHasLink = !!partner.pendingLink;
-      const now = new Date();
-      await User.updateOne(
-        { telegramId: partnerId },
-        partnerHasLink
-          ? { state: "inqueue", isWaiting: true, queuedAt: now }
-          : { state: "awaiting_cut_link", isWaiting: false, queuedAt: null },
-      );
+      await Queue.deleteOne({ telegramId: partnerId });
       await bot.telegram.sendMessage(
         partnerId,
         "⚠️ *Partner anda telah membatalkan match.*\n\nSistem sedang mencari partner baru untuk anda 🤝",
         { parse_mode: "Markdown" },
       );
-      console.log(`[PARTNER_REQUEUED] telegramId=${partnerId} (@${partner.tiktokUsername ?? "unknown"}) requeued after cancel.`);
-      if (partnerHasLink) await tryMatch(bot, partnerId);
+      if (partner.pendingLink) {
+        console.log(`[PARTNER_REQUEUED] telegramId=${partnerId} (@${partner.tiktokUsername ?? "unknown"}) re-entering queue after cancel.`);
+        await addToQueue(bot, partnerId, partner.pendingLink);
+      } else {
+        await User.updateOne({ telegramId: partnerId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+        console.log(`[PARTNER_NO_LINK] telegramId=${partnerId} has no pendingLink — set to awaiting_cut_link.`);
+      }
     }
   });
 
