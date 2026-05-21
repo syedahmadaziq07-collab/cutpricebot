@@ -34179,12 +34179,12 @@ var require_lib5 = __commonJS({
       const dest = new URL$1(destination).protocol;
       return orig === dest;
     };
-    function fetch(url, opts) {
-      if (!fetch.Promise) {
+    function fetch2(url, opts) {
+      if (!fetch2.Promise) {
         throw new Error("native promise missing, set fetch.Promise to your favorite alternative");
       }
-      Body.Promise = fetch.Promise;
-      return new fetch.Promise(function(resolve, reject) {
+      Body.Promise = fetch2.Promise;
+      return new fetch2.Promise(function(resolve, reject) {
         const request = new Request(url, opts);
         const options = getNodeRequestOptions(request);
         const send = (options.protocol === "https:" ? https : http).request;
@@ -34255,7 +34255,7 @@ var require_lib5 = __commonJS({
         req.on("response", function(res) {
           clearTimeout(reqTimeout);
           const headers = createHeadersLenient(res.headers);
-          if (fetch.isRedirect(res.statusCode)) {
+          if (fetch2.isRedirect(res.statusCode)) {
             const location = headers.get("Location");
             let locationURL = null;
             try {
@@ -34317,7 +34317,7 @@ var require_lib5 = __commonJS({
                   requestOpts.body = void 0;
                   requestOpts.headers.delete("content-length");
                 }
-                resolve(fetch(new Request(locationURL, requestOpts)));
+                resolve(fetch2(new Request(locationURL, requestOpts)));
                 finalize();
                 return;
             }
@@ -34409,11 +34409,11 @@ var require_lib5 = __commonJS({
         stream.end();
       }
     }
-    fetch.isRedirect = function(code) {
+    fetch2.isRedirect = function(code) {
       return code === 301 || code === 302 || code === 303 || code === 307 || code === 308;
     };
-    fetch.Promise = global.Promise;
-    module.exports = exports = fetch;
+    fetch2.Promise = global.Promise;
+    module.exports = exports = fetch2;
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = exports;
     exports.Headers = Headers;
@@ -43118,9 +43118,23 @@ var NO_RESPONSE_24H_MS = 24 * 60 * 60 * 1e3;
 function generateReferralCode() {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
-function extractTikTokUsername(input) {
+async function extractTikTokUsername(input) {
   const trimmed = input.trim();
-  if (trimmed.startsWith("@")) return trimmed.slice(1);
+  if (trimmed.startsWith("@")) {
+    const m = trimmed.slice(1).match(/^([a-zA-Z0-9._]+)/);
+    return m ? m[1] : null;
+  }
+  if (/https?:\/\/vt\.tiktok\.com\//i.test(trimmed)) {
+    try {
+      const res = await fetch(trimmed, { redirect: "follow" });
+      const resolved = res.url;
+      const vtMatch = resolved.match(/tiktok\.com\/@([a-zA-Z0-9._]+)/i);
+      if (vtMatch && vtMatch[1]) return vtMatch[1];
+    } catch {
+      return null;
+    }
+    return null;
+  }
   const match = trimmed.match(
     /(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@([a-zA-Z0-9._]+)/i
   );
@@ -44412,12 +44426,13 @@ Take a quick look below and make sure everything's valid \u{1F440}\u2728`,
     if (!user || user.tiktokUsername === "__pending__") {
       if (user?.state === "awaiting_tiktok_profile") {
         console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
-        const rawUsername = extractTikTokUsername(text);
+        const rawUsername = await extractTikTokUsername(text);
         if (!rawUsername) {
-          console.warn(`[TIKTOK] Username extraction failed for telegramId=${telegramId}, input="${text.slice(0, 100)}"`);
-          await ctx.reply("Hmm link tu tak valid la \u{1F615}\nHantar betul2 k \u2014 contoh:\nhttps://www.tiktok.com/@username");
+          console.warn(`[INVALID_TIKTOK_PROFILE_LINK] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
+          await ctx.reply("\u274C Invalid TikTok profile link.\n\nPlease send a valid TikTok username or profile link \u{1F440}\n\nExample: https://www.tiktok.com/@username");
           return;
         }
+        console.log(`[TIKTOK_USERNAME_PARSED] telegramId=${telegramId} raw="${text.slice(0, 100)}" \u2192 username="${rawUsername}"`);
         const username = normalizeTikTokUsername(rawUsername);
         const existingOwner = await User.findOne({
           tiktokUsername: { $regex: new RegExp(`^${username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
@@ -44471,7 +44486,7 @@ Sekarang hantar TikTok cut price link kau \u{1F447}`,
     if (user.state === "awaiting_tiktok_profile") {
       console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
       if (user.tiktokUsernameLocked && user.tiktokUsername && user.tiktokUsername !== "__pending__") {
-        const rawAttempt = extractTikTokUsername(text);
+        const rawAttempt = await extractTikTokUsername(text);
         const attempt = rawAttempt ? normalizeTikTokUsername(rawAttempt) : null;
         if (attempt && attempt === normalizeTikTokUsername(user.tiktokUsername)) {
           await User.updateOne({ telegramId }, { state: "awaiting_cut_link" });
@@ -44488,12 +44503,13 @@ Locked username: @${user.tiktokUsername}`);
         }
         return;
       }
-      const rawUsername = extractTikTokUsername(text);
+      const rawUsername = await extractTikTokUsername(text);
       if (!rawUsername) {
-        console.warn(`[TIKTOK] Username extraction failed for telegramId=${telegramId}, input="${text.slice(0, 100)}"`);
-        await ctx.reply("Link tu pelik sikit \u{1F615}\nHantar link profile TikTok betul k \u2014 contoh:\nhttps://www.tiktok.com/@username");
+        console.warn(`[INVALID_TIKTOK_PROFILE_LINK] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
+        await ctx.reply("\u274C Invalid TikTok profile link.\n\nPlease send a valid TikTok username or profile link \u{1F440}\n\nExample: https://www.tiktok.com/@username");
         return;
       }
+      console.log(`[TIKTOK_USERNAME_PARSED] telegramId=${telegramId} raw="${text.slice(0, 100)}" \u2192 username="${rawUsername}"`);
       const username = normalizeTikTokUsername(rawUsername);
       const existingOwner = await User.findOne({
         tiktokUsername: { $regex: new RegExp(`^${username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },

@@ -116,13 +116,34 @@ function generateReferralCode(): string {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-function extractTikTokUsername(input: string): string | null {
+async function extractTikTokUsername(input: string): Promise<string | null> {
   const trimmed = input.trim();
-  if (trimmed.startsWith("@")) return trimmed.slice(1);
+
+  // Handle bare @username — extract only valid username characters
+  if (trimmed.startsWith("@")) {
+    const m = trimmed.slice(1).match(/^([a-zA-Z0-9._]+)/);
+    return m ? m[1] : null;
+  }
+
+  // Handle vt.tiktok.com short links — follow redirect to resolve full URL
+  if (/https?:\/\/vt\.tiktok\.com\//i.test(trimmed)) {
+    try {
+      const res = await fetch(trimmed, { redirect: "follow" });
+      const resolved = res.url;
+      const vtMatch = resolved.match(/tiktok\.com\/@([a-zA-Z0-9._]+)/i);
+      if (vtMatch && vtMatch[1]) return vtMatch[1];
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  // Handle standard tiktok.com/@username URLs (query params are ignored by char class)
   const match = trimmed.match(
     /(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@([a-zA-Z0-9._]+)/i,
   );
   if (match && match[1]) return match[1];
+
   return null;
 }
 
@@ -1506,12 +1527,13 @@ export function createBot(): Telegraf {
     if (!user || user.tiktokUsername === "__pending__") {
       if (user?.state === "awaiting_tiktok_profile") {
         console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
-        const rawUsername = extractTikTokUsername(text);
+        const rawUsername = await extractTikTokUsername(text);
         if (!rawUsername) {
-          console.warn(`[TIKTOK] Username extraction failed for telegramId=${telegramId}, input="${text.slice(0, 100)}"`);
-          await ctx.reply("Hmm link tu tak valid la 😕\nHantar betul2 k — contoh:\nhttps://www.tiktok.com/@username");
+          console.warn(`[INVALID_TIKTOK_PROFILE_LINK] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
+          await ctx.reply("❌ Invalid TikTok profile link.\n\nPlease send a valid TikTok username or profile link 👀\n\nExample: https://www.tiktok.com/@username");
           return;
         }
+        console.log(`[TIKTOK_USERNAME_PARSED] telegramId=${telegramId} raw="${text.slice(0, 100)}" → username="${rawUsername}"`);
         const username = normalizeTikTokUsername(rawUsername);
 
         // Check for duplicate — reject if taken by another account
@@ -1568,7 +1590,7 @@ export function createBot(): Telegraf {
 
       // If this user already has a locked username, block any change attempt
       if (user.tiktokUsernameLocked && user.tiktokUsername && user.tiktokUsername !== "__pending__") {
-        const rawAttempt = extractTikTokUsername(text);
+        const rawAttempt = await extractTikTokUsername(text);
         const attempt = rawAttempt ? normalizeTikTokUsername(rawAttempt) : null;
         if (attempt && attempt === normalizeTikTokUsername(user.tiktokUsername)) {
           // Same username — just restore state
@@ -1581,12 +1603,13 @@ export function createBot(): Telegraf {
         return;
       }
 
-      const rawUsername = extractTikTokUsername(text);
+      const rawUsername = await extractTikTokUsername(text);
       if (!rawUsername) {
-        console.warn(`[TIKTOK] Username extraction failed for telegramId=${telegramId}, input="${text.slice(0, 100)}"`);
-        await ctx.reply("Link tu pelik sikit 😕\nHantar link profile TikTok betul k — contoh:\nhttps://www.tiktok.com/@username");
+        console.warn(`[INVALID_TIKTOK_PROFILE_LINK] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
+        await ctx.reply("❌ Invalid TikTok profile link.\n\nPlease send a valid TikTok username or profile link 👀\n\nExample: https://www.tiktok.com/@username");
         return;
       }
+      console.log(`[TIKTOK_USERNAME_PARSED] telegramId=${telegramId} raw="${text.slice(0, 100)}" → username="${rawUsername}"`);
       const username = normalizeTikTokUsername(rawUsername);
 
       // Check for duplicate — reject if taken by another account
