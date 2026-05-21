@@ -4,16 +4,9 @@ import { connectDB } from "./bot/db";
 import { createBot } from "./bot/bot";
 
 const rawPort = process.env["PORT"];
+const port = rawPort ? Number(rawPort) : null;
 
-if (!rawPort) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
-}
-
-const port = Number(rawPort);
-
-if (Number.isNaN(port) || port <= 0) {
+if (port !== null && (Number.isNaN(port) || port <= 0)) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
@@ -22,18 +15,23 @@ async function main() {
 
   const bot = createBot();
   await bot.launch();
+  console.log("Bot is running with polling");
   logger.info("CutSquad bot launched ✅");
 
   process.once("SIGINT", () => bot.stop("SIGINT"));
   process.once("SIGTERM", () => bot.stop("SIGTERM"));
 
-  app.listen(port, (err) => {
-    if (err) {
-      logger.error({ err }, "Error listening on port");
-      process.exit(1);
-    }
-    logger.info({ port }, "Server listening");
-  });
+  if (port !== null) {
+    app.listen(port, (err) => {
+      if (err) {
+        logger.error({ err }, "Error listening on port");
+        process.exit(1);
+      }
+      logger.info({ port }, "Server listening");
+    });
+  } else {
+    logger.info("No PORT set — HTTP server not started");
+  }
 }
 
 main().catch((err) => {

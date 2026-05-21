@@ -351,6 +351,7 @@ export function createBot(): Telegraf {
 
   bot.on(message("photo"), async (ctx) => {
     const telegramId = ctx.from.id;
+    console.log(`[MSG] photo from telegramId=${telegramId}`);
 
     const sus = await checkSuspension(telegramId);
     if (sus.suspended) {
@@ -379,6 +380,7 @@ export function createBot(): Telegraf {
   bot.on(message("text"), async (ctx) => {
     const telegramId = ctx.from.id;
     const text = ctx.message.text.trim();
+    console.log(`[MSG] text from telegramId=${telegramId}: ${text.slice(0, 80)}`);
 
     if (text.startsWith("/")) return;
 
