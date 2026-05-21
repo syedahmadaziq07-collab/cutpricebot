@@ -13,6 +13,7 @@ export interface IUser extends Document {
   isBanned: boolean;
   lastMatchPartnerId: number | null;
   isWaiting: boolean;
+  activeMatchId: string | null;
   cancelCooldownUntil: Date | null;
   state: string;
   pendingLink: string | null;
@@ -53,6 +54,7 @@ const userSchema = new mongoose.Schema<IUser>(
     isBanned: { type: Boolean, default: false },
     lastMatchPartnerId: { type: Number, default: null },
     isWaiting: { type: Boolean, default: false },
+    activeMatchId: { type: String, default: null },
     cancelCooldownUntil: { type: Date, default: null },
     state: { type: String, default: "idle" },
     pendingLink: { type: String, default: null },
@@ -78,5 +80,11 @@ const userSchema = new mongoose.Schema<IUser>(
   },
   { timestamps: true },
 );
+
+userSchema.index({ state: 1 });
+userSchema.index({ isWaiting: 1 });
+userSchema.index({ queuedAt: 1 });
+userSchema.index({ activeMatchId: 1 });
+userSchema.index({ state: 1, isWaiting: 1, activeMatchId: 1, queuedAt: 1 });
 
 export const User = mongoose.model<IUser>("User", userSchema);

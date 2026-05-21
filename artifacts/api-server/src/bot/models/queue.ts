@@ -9,7 +9,7 @@ export interface IQueue extends Document {
 const queueSchema = new mongoose.Schema<IQueue>({
   telegramId: { type: Number, required: true, unique: true },
   pendingLink: { type: String, required: true },
-  createdAt: { type: Date, default: Date.now },
+  createdAt: { type: Date, default: Date.now, index: true },
 });
 
 export const Queue = mongoose.model<IQueue>("Queue", queueSchema);
