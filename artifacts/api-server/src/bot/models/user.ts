@@ -19,6 +19,7 @@ export interface IUser extends Document {
   pendingLink: string | null;
   lastNotifiedAt: Date | null;
   queuedAt: Date | null;
+  originalQueuedAt: Date | null;
   lastDailyReset: Date | null;
   dailyReferralCutsToday: number;
   dailyReferralResetAt: Date | null;
@@ -60,6 +61,7 @@ const userSchema = new mongoose.Schema<IUser>(
     pendingLink: { type: String, default: null },
     lastNotifiedAt: { type: Date, default: null },
     queuedAt: { type: Date, default: null },
+    originalQueuedAt: { type: Date, default: null },
     lastDailyReset: { type: Date, default: null },
     dailyReferralCutsToday: { type: Number, default: 0 },
     dailyReferralResetAt: { type: Date, default: null },

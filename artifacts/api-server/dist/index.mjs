@@ -42950,6 +42950,7 @@ var userSchema = new mongoose2.Schema(
     pendingLink: { type: String, default: null },
     lastNotifiedAt: { type: Date, default: null },
     queuedAt: { type: Date, default: null },
+    originalQueuedAt: { type: Date, default: null },
     lastDailyReset: { type: Date, default: null },
     dailyReferralCutsToday: { type: Number, default: 0 },
     dailyReferralResetAt: { type: Date, default: null },
@@ -43348,12 +43349,10 @@ async function handleProofTimeout(bot, matchId, proofOwnerId, inactivePartnerId)
     matchTimers.delete(matchId);
   }
   proofTimers.delete(`proof:${matchId}:${proofOwnerId}`);
+  const proofOwnerUser = await User.findOne({ telegramId: proofOwnerId }).select("pendingLink tiktokUsername");
+  const proofOwnerLink = proofOwnerUser?.pendingLink ?? match.link1 === void 0 ? "" : match.user1Id === proofOwnerId ? match.link1 : match.link2;
+  console.log(`[NO_RESPONSE_TIMEOUT] telegramId=${proofOwnerId} \u2014 requeueing innocent proof owner.`);
   await Queue.deleteOne({ telegramId: proofOwnerId });
-  await User.updateOne(
-    { telegramId: proofOwnerId },
-    { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null }
-  );
-  console.log(`[NO_RESPONSE_TIMEOUT] telegramId=${proofOwnerId} reset to awaiting_cut_link.`);
   try {
     await bot.telegram.sendMessage(
       proofOwnerId,
@@ -43361,9 +43360,15 @@ async function handleProofTimeout(bot, matchId, proofOwnerId, inactivePartnerId)
 
 No response received within 4 minutes.
 
-You can now submit a new link and find another swap partner \u{1F517}\u2728`
+Searching for a new partner for you automatically \u{1F50D}\u2728`
     );
   } catch {
+  }
+  if (proofOwnerLink) {
+    await requeueUser(bot, proofOwnerId, proofOwnerLink);
+  } else {
+    await User.updateOne({ telegramId: proofOwnerId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null });
+    console.log(`[NO_RESPONSE_TIMEOUT] telegramId=${proofOwnerId} has no pendingLink \u2014 reset to awaiting_cut_link.`);
   }
   await Queue.deleteOne({ telegramId: inactivePartnerId });
   await User.updateOne(
@@ -43389,12 +43394,14 @@ async function handleMatchExpiry(bot, matchId, user1Id, user2Id) {
       proofTimers.delete(proofTimerKey);
     }
     await Queue.deleteOne({ telegramId: uid });
-    await User.updateOne(
-      { telegramId: uid },
-      { state: "awaiting_cut_link", pendingLink: null, isWaiting: false, queuedAt: null, activeMatchId: null }
-    );
     console.log(`[QUEUE_REMOVE] telegramId=${uid} removed from queue (match expired).`);
     await bot.telegram.sendMessage(uid, expireMsg);
+    const expiredLink = user.pendingLink ?? (match.user1Id === uid ? match.link1 : match.link2);
+    if (expiredLink) {
+      await requeueUser(bot, uid, expiredLink);
+    } else {
+      await User.updateOne({ telegramId: uid }, { state: "awaiting_cut_link", pendingLink: null, isWaiting: false, queuedAt: null, activeMatchId: null });
+    }
   }
   matchTimers.delete(matchId);
 }
@@ -43540,9 +43547,34 @@ async function addToQueue(_bot, telegramId, pendingLink) {
   await Queue.deleteOne({ telegramId });
   const queuedAt = /* @__PURE__ */ new Date();
   await Queue.create({ telegramId, pendingLink, createdAt: queuedAt });
-  await User.updateOne({ telegramId }, { state: "inqueue", isWaiting: true, queuedAt, pendingLink, activeMatchId: null });
+  await User.updateOne({ telegramId }, { state: "inqueue", isWaiting: true, queuedAt, originalQueuedAt: queuedAt, pendingLink, activeMatchId: null });
   const queueSize = await Queue.countDocuments();
   console.log(`[USER_QUEUED_AFTER_NO_PARTNER] telegramId=${telegramId} entered queue. Queue size: ${queueSize}.`);
+}
+async function requeueUser(bot, telegramId, pendingLink) {
+  const user = await User.findOne({ telegramId }).select("originalQueuedAt tiktokUsername");
+  if (!user) return;
+  const sus = await checkSuspension(telegramId);
+  if (sus.suspended) {
+    console.log(`[REQUEUE_SKIPPED_COOLDOWN] telegramId=${telegramId} (@${user.tiktokUsername}) \u2014 requeue skipped (suspended/banned).`);
+    await User.updateOne({ telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null });
+    return;
+  }
+  const originalQueuedAt = user.originalQueuedAt ?? null;
+  const queuedAt = originalQueuedAt ?? /* @__PURE__ */ new Date();
+  const restoredPriority = originalQueuedAt !== null;
+  await Queue.deleteOne({ telegramId });
+  await Queue.create({ telegramId, pendingLink, createdAt: queuedAt });
+  await User.updateOne(
+    { telegramId },
+    { state: "inqueue", isWaiting: true, queuedAt, pendingLink, activeMatchId: null }
+  );
+  if (restoredPriority) {
+    console.log(`[ORIGINAL_QUEUE_PRIORITY_RESTORED] telegramId=${telegramId} (@${user.tiktokUsername}) requeued with original queuedAt=${queuedAt.toISOString()}`);
+  }
+  console.log(`[PARTNER_REQUEUED] telegramId=${telegramId} (@${user.tiktokUsername}) requeued after match failure. originalPriority=${restoredPriority} queuedAt=${queuedAt.toISOString()}`);
+  console.log(`[REQUEUE_MATCH_RETRY] telegramId=${telegramId} \u2014 triggering atomic match attempt after requeue.`);
+  await tryMatchAtomic(bot, telegramId, pendingLink);
 }
 async function grantReferralReward(bot, referredUserId) {
   const referral = await Referral.findOne({ referredId: referredUserId, rewardGranted: false });
@@ -44709,8 +44741,7 @@ ${refLink}`,
         { parse_mode: "Markdown" }
       );
       if (partner.pendingLink) {
-        console.log(`[PARTNER_REQUEUED] telegramId=${partnerId} (@${partner.tiktokUsername ?? "unknown"}) re-entering queue after cancel.`);
-        await addToQueue(bot, partnerId, partner.pendingLink);
+        await requeueUser(bot, partnerId, partner.pendingLink);
       } else {
         await User.updateOne({ telegramId: partnerId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null });
         console.log(`[PARTNER_NO_LINK] telegramId=${partnerId} has no pendingLink \u2014 set to awaiting_cut_link.`);
@@ -44878,12 +44909,12 @@ Weekly rejects: *${newWeeklyCount}* | Total rejects: *${totalRejects}*`,
     } catch {
     }
     await ctx.reply("\u2705 *Match dibatalkan.*\nTerima kasih kerana membantu menjaga sistem CutSquad.", { parse_mode: "Markdown" });
-    const rejecter = await User.findOne({ telegramId });
-    if (rejecter?.pendingLink) {
-      console.log(`[PARTNER_REQUEUED] telegramId=${telegramId} re-entering queue after proof rejection.`);
-      await addToQueue(bot, telegramId, rejecter.pendingLink);
+    const rejecter = await User.findOne({ telegramId }).select("pendingLink");
+    const rejecterLink = rejecter?.pendingLink ?? (match.user1Id === telegramId ? match.link1 : match.link2);
+    if (rejecterLink) {
+      await requeueUser(bot, telegramId, rejecterLink);
     } else {
-      await User.updateOne({ telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+      await User.updateOne({ telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null });
     }
   });
   bot.action("cut_more", async (ctx) => {
