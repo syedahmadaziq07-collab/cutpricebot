@@ -43235,12 +43235,10 @@ async function notifyQueueUsers(bot, newUserTikTok, newUserTelegramId) {
     try {
       await bot.telegram.sendMessage(
         u.telegramId,
-        `\u{1F514} *Pengguna baru sedang mencari partner cut!*
+        `\u{1F514} Someone new just dropped their cut link\\! \u{1F440}\u2728
 
-Username TikTok:
-@${newUserTikTok}
-
-Buka bot sekarang untuk mula swap cut price link \u{1F91D}`,
+TikTok username:
+@${newUserTikTok}`,
         { parse_mode: "Markdown" }
       );
       await User.updateOne({ telegramId: u.telegramId }, { lastNotifiedAt: /* @__PURE__ */ new Date() });

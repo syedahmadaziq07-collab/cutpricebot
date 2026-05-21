@@ -254,7 +254,7 @@ async function notifyQueueUsers(
     try {
       await bot.telegram.sendMessage(
         u.telegramId,
-        `🔔 *Pengguna baru sedang mencari partner cut!*\n\nUsername TikTok:\n@${newUserTikTok}\n\nBuka bot sekarang untuk mula swap cut price link 🤝`,
+        `🔔 Someone new just dropped their cut link\\! 👀✨\n\nTikTok username:\n@${newUserTikTok}`,
         { parse_mode: "Markdown" },
       );
       await User.updateOne({ telegramId: u.telegramId }, { lastNotifiedAt: new Date() });
