@@ -43432,6 +43432,8 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
   const matchObjectId = new mongoose7.Types.ObjectId();
   const matchId = matchObjectId.toString();
   console.log(`[ATOMIC_PARTNER_CLAIM_ATTEMPT] telegramId=${currentTelegramId} seeking partner. Excluding ${excludeIds.length - 1} recently paired user(s).`);
+  console.log(`[FIFO_MATCH_SEARCH] telegramId=${currentTelegramId} \u2014 scanning queue ordered by queuedAt ASC (oldest-first FIFO).`);
+  console.log(`[FIFO_QUEUE_ORDER_USED] sort=queuedAt:1 \u2014 oldest waiting user will be claimed first.`);
   const partner = await User.findOneAndUpdate(
     {
       telegramId: { $nin: excludeIds },
@@ -43456,6 +43458,8 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
     console.log(`[ATOMIC_PARTNER_CLAIM_FAILED] telegramId=${currentTelegramId} \u2014 no eligible partner found in queue.`);
     return false;
   }
+  console.log(`[FIFO_MATCH_FOUND] telegramId=${currentTelegramId} found partner telegramId=${partner.telegramId} (@${partner.tiktokUsername}) queuedAt=${partner.queuedAt?.toISOString() ?? "null"}.`);
+  console.log(`[FIFO_MATCH_SUCCESS] matchId=${matchId} \u2014 FIFO pair: claimer=${currentTelegramId} partner=${partner.telegramId} (oldest in queue).`);
   console.log(`[ATOMIC_PARTNER_CLAIM_SUCCESS] telegramId=${currentTelegramId} claimed partner telegramId=${partner.telegramId} (@${partner.tiktokUsername}) for matchId=${matchId}`);
   await User.updateOne(
     { telegramId: currentTelegramId },

@@ -477,8 +477,10 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
   const matchId = matchObjectId.toString();
 
   console.log(`[ATOMIC_PARTNER_CLAIM_ATTEMPT] telegramId=${currentTelegramId} seeking partner. Excluding ${excludeIds.length - 1} recently paired user(s).`);
+  console.log(`[FIFO_MATCH_SEARCH] telegramId=${currentTelegramId} — scanning queue ordered by queuedAt ASC (oldest-first FIFO).`);
+  console.log(`[FIFO_QUEUE_ORDER_USED] sort=queuedAt:1 — oldest waiting user will be claimed first.`);
 
-  // Atomically claim the oldest eligible waiting user
+  // Atomically claim the oldest eligible waiting user (strict FIFO via queuedAt: 1 sort)
   const partner = await User.findOneAndUpdate(
     {
       telegramId: { $nin: excludeIds },
@@ -505,6 +507,8 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
     return false;
   }
 
+  console.log(`[FIFO_MATCH_FOUND] telegramId=${currentTelegramId} found partner telegramId=${partner.telegramId} (@${partner.tiktokUsername}) queuedAt=${partner.queuedAt?.toISOString() ?? "null"}.`);
+  console.log(`[FIFO_MATCH_SUCCESS] matchId=${matchId} — FIFO pair: claimer=${currentTelegramId} partner=${partner.telegramId} (oldest in queue).`);
   console.log(`[ATOMIC_PARTNER_CLAIM_SUCCESS] telegramId=${currentTelegramId} claimed partner telegramId=${partner.telegramId} (@${partner.tiktokUsername}) for matchId=${matchId}`);
 
   // Update current user to in_match
