@@ -606,38 +606,56 @@ async function checkAndCompleteMatch(bot: Telegraf, matchId: string): Promise<vo
     const user = await User.findOne({ telegramId: uid });
     if (!user) continue;
 
-    const newBalance = Math.max(0, user.cutBalance - 1);
     const isFirstSwap = !user.firstSwapCompleted;
 
-    await User.updateOne(
-      { telegramId: uid },
-      {
-        state: "awaiting_cut_link",
-        cutBalance: newBalance,
-        pendingLink: null,
-        queuedAt: null,
-        isWaiting: false,
-        firstSwapCompleted: true,
-      },
-    );
+    // Step 1 — compute deduction
+    const newBalance = Math.max(0, user.cutBalance - 1);
+    console.log(`[CUT_DEDUCTED] telegramId=${uid} (@${user.tiktokUsername}) cutBalance: ${user.cutBalance} → ${newBalance} for matchId=${matchId}.`);
 
-    if (newBalance === 0) {
-      const me = await bot.telegram.getMe();
-      const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
-      await bot.telegram.sendMessage(
-        uid,
-        `🎉 Swap completed successfully!\n\nThanks for using CutPricebot 🤝✨\n\nRemaining cuts: *0* 💖\n\nYou've used all your cuts!\n\n🔥 Refer a friend and get *+${REFERRAL_CUT_REWARD} cuts* when they complete their first swap!\n\n${refLink}`,
-        { parse_mode: "Markdown" },
-      );
-    } else {
-      await bot.telegram.sendMessage(
-        uid,
-        `🎉 Swap completed successfully!\n\nThanks for using CutPricebot 🤝✨\n\nRemaining cuts: *${newBalance}* 💖`,
+    // Step 2 — persist to DB first, confirm success before sending any message
+    let saveOk = false;
+    try {
+      const saveResult = await User.updateOne(
+        { telegramId: uid },
         {
-          parse_mode: "Markdown",
-          ...Markup.inlineKeyboard([Markup.button.callback("🔁 Cut More!", "cut_more")]),
+          state: "awaiting_cut_link",
+          cutBalance: newBalance,
+          pendingLink: null,
+          queuedAt: null,
+          isWaiting: false,
+          firstSwapCompleted: true,
         },
       );
+      if (saveResult.modifiedCount > 0) {
+        console.log(`[CUT_SAVE_SUCCESS] telegramId=${uid} (@${user.tiktokUsername}) cutBalance saved as ${newBalance} for matchId=${matchId}.`);
+        saveOk = true;
+      } else {
+        console.warn(`[CUT_SAVE_FAILED] telegramId=${uid} (@${user.tiktokUsername}) updateOne matched no document for matchId=${matchId}. Balance NOT deducted.`);
+      }
+    } catch (err) {
+      console.error(`[CUT_SAVE_FAILED] telegramId=${uid} (@${user.tiktokUsername}) DB error for matchId=${matchId}: ${(err as Error).message}`);
+    }
+
+    // Step 3 — send message only after DB write is confirmed
+    if (saveOk) {
+      if (newBalance === 0) {
+        const me = await bot.telegram.getMe();
+        const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
+        await bot.telegram.sendMessage(
+          uid,
+          `🎉 Swap completed successfully!\n\nThanks for using CutPricebot 🤝✨\n\nRemaining cuts: *0* 💖\n\nYou've used all your cuts!\n\n🔥 Refer a friend and get *+${REFERRAL_CUT_REWARD} cuts* when they complete their first swap!\n\n${refLink}`,
+          { parse_mode: "Markdown" },
+        );
+      } else {
+        await bot.telegram.sendMessage(
+          uid,
+          `🎉 Swap completed successfully!\n\nThanks for using CutPricebot 🤝✨\n\nRemaining cuts: *${newBalance}* 💖`,
+          {
+            parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([Markup.button.callback("🔁 Cut More!", "cut_more")]),
+          },
+        );
+      }
     }
 
     if (isFirstSwap) {
