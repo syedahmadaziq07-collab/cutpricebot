@@ -1327,8 +1327,7 @@ export function createBot(): Telegraf {
       if (activeMatch) {
         console.log(`[ACTIVE_MATCH_BLOCKED_NEW_LINK] telegramId=${telegramId} (@${user.tiktokUsername}) tried to submit new link while match ${activeMatch._id} is still active.`);
         await ctx.reply(
-          "⚠️ *Selesaikan swap semasa dahulu.*\n\nAnda hanya boleh cari partner baru selepas kedua-dua pihak approve bukti cut masing-masing.",
-          { parse_mode: "Markdown" },
+          "Please complete your current swap first 🤝\n\nYou can submit a new link after both proofs are approved.\n\nDon't worry — I'll send you a notification once your current swap is fully completed 🔔✨",
         );
         return;
       }

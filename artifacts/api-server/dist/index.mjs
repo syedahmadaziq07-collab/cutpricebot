@@ -42917,8 +42917,7 @@ ${refLink}`,
       if (activeMatch) {
         console.log(`[ACTIVE_MATCH_BLOCKED_NEW_LINK] telegramId=${telegramId} (@${user.tiktokUsername}) tried to submit new link while match ${activeMatch._id} is still active.`);
         await ctx.reply(
-          "\u26A0\uFE0F *Selesaikan swap semasa dahulu.*\n\nAnda hanya boleh cari partner baru selepas kedua-dua pihak approve bukti cut masing-masing.",
-          { parse_mode: "Markdown" }
+          "Please complete your current swap first \u{1F91D}\n\nYou can submit a new link after both proofs are approved.\n\nDon't worry \u2014 I'll send you a notification once your current swap is fully completed \u{1F514}\u2728"
         );
         return;
       }
