@@ -670,6 +670,9 @@ export function createBot(): Telegraf {
     let referralCode: string | null = null;
     if (payload && payload.startsWith("ref_")) referralCode = payload.slice(4);
 
+    // Detect whether this is a brand-new user (no prior document at all)
+    const isNewUser = existingUser === null;
+
     await User.findOneAndUpdate(
       { telegramId },
       {
@@ -682,6 +685,34 @@ export function createBot(): Telegraf {
       },
       { upsert: true, new: true },
     );
+
+    // Admin notification — only for brand-new users, never for returning __pending__ users
+    if (isNewUser) {
+      const joinedAt = new Date().toUTCString().replace("GMT", "UTC");
+      const displayName = ctx.from.first_name ?? "Unknown";
+      const displayUsername = ctx.from.username ? `@${ctx.from.username}` : "No username";
+      const totalUsers = await User.countDocuments();
+
+      const adminMsg =
+        `👤 NEW CUSTOMER JOINED!\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `• Name: ${displayName}\n` +
+        `• Username: ${displayUsername}\n` +
+        `• ID: ${telegramId}\n` +
+        `• Joined At: ${joinedAt}\n` +
+        `• User Number: #${totalUsers}\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `🆕 New user unlocked ✨`;
+
+      for (const adminId of getAdminIds()) {
+        try {
+          await bot.telegram.sendMessage(adminId, adminMsg);
+          console.log(`[NEW_USER_ADMIN_NOTIFIED] telegramId=${telegramId} (@${ctx.from.username ?? "no_username"}) — notified adminId=${adminId}. Total users: ${totalUsers}.`);
+        } catch (err) {
+          console.error(`[NEW_USER_ADMIN_NOTIFY_FAILED] telegramId=${telegramId} — failed to notify adminId=${adminId}: ${(err as Error).message}`);
+        }
+      }
+    }
 
     await ctx.reply(
       "👋 Weh selamat datang ke *CutSquad*!\n\nBot ni untuk swap TikTok cut price links — kau cut gue, gue cut kau! 🔁\n\nHantar link profile TikTok kau 👇\n_(contoh: https://www.tiktok.com/@username)_",

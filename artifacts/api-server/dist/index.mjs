@@ -42281,6 +42281,7 @@ Drop your TikTok cut price link below to start swapping \u{1F517}\u2728`
     }
     let referralCode = null;
     if (payload && payload.startsWith("ref_")) referralCode = payload.slice(4);
+    const isNewUser = existingUser === null;
     await User.findOneAndUpdate(
       { telegramId },
       {
@@ -42293,6 +42294,29 @@ Drop your TikTok cut price link below to start swapping \u{1F517}\u2728`
       },
       { upsert: true, new: true }
     );
+    if (isNewUser) {
+      const joinedAt = (/* @__PURE__ */ new Date()).toUTCString().replace("GMT", "UTC");
+      const displayName = ctx.from.first_name ?? "Unknown";
+      const displayUsername = ctx.from.username ? `@${ctx.from.username}` : "No username";
+      const totalUsers = await User.countDocuments();
+      const adminMsg = `\u{1F464} NEW CUSTOMER JOINED!
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+\u2022 Name: ${displayName}
+\u2022 Username: ${displayUsername}
+\u2022 ID: ${telegramId}
+\u2022 Joined At: ${joinedAt}
+\u2022 User Number: #${totalUsers}
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+\u{1F195} New user unlocked \u2728`;
+      for (const adminId of getAdminIds()) {
+        try {
+          await bot.telegram.sendMessage(adminId, adminMsg);
+          console.log(`[NEW_USER_ADMIN_NOTIFIED] telegramId=${telegramId} (@${ctx.from.username ?? "no_username"}) \u2014 notified adminId=${adminId}. Total users: ${totalUsers}.`);
+        } catch (err) {
+          console.error(`[NEW_USER_ADMIN_NOTIFY_FAILED] telegramId=${telegramId} \u2014 failed to notify adminId=${adminId}: ${err.message}`);
+        }
+      }
+    }
     await ctx.reply(
       "\u{1F44B} Weh selamat datang ke *CutSquad*!\n\nBot ni untuk swap TikTok cut price links \u2014 kau cut gue, gue cut kau! \u{1F501}\n\nHantar link profile TikTok kau \u{1F447}\n_(contoh: https://www.tiktok.com/@username)_",
       { parse_mode: "Markdown" }
