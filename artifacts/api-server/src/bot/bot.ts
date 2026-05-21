@@ -1343,7 +1343,7 @@ export function createBot(): Telegraf {
         `  pendingLink (before)= ${user.pendingLink ? `"${user.pendingLink}"` : "NULL"}`,
       );
 
-      await ctx.reply("Secured! 🔒 Finding ur partner…\n\n_(Kau dalam queue — bot tengah cari match sekarang)_", { parse_mode: "Markdown" });
+      await ctx.reply("Locked in! 🔒 Hunting for your next cut buddy… ✨\n\n_(You're in the queue right now — matching you with someone active 👀)_", { parse_mode: "Markdown" });
 
       // Add to Queue and attempt match first, then notify other users
       await addToQueue(bot, telegramId, text);

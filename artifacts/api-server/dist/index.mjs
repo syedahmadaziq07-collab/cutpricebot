@@ -42930,7 +42930,7 @@ ${refLink}`,
   isWaiting (before)  = ${user.isWaiting}
   pendingLink (before)= ${user.pendingLink ? `"${user.pendingLink}"` : "NULL"}`
       );
-      await ctx.reply("Secured! \u{1F512} Finding ur partner\u2026\n\n_(Kau dalam queue \u2014 bot tengah cari match sekarang)_", { parse_mode: "Markdown" });
+      await ctx.reply("Locked in! \u{1F512} Hunting for your next cut buddy\u2026 \u2728\n\n_(You're in the queue right now \u2014 matching you with someone active \u{1F440})_", { parse_mode: "Markdown" });
       await addToQueue(bot, telegramId, text);
       await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
       return;
