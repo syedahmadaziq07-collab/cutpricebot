@@ -41733,8 +41733,8 @@ async function cleanupStaleQueue() {
   }
 }
 var DAILY_CUT_FLOOR = 7;
-var REFERRAL_CUT_REWARD = 4;
-var DAILY_REFERRAL_CAP = 20;
+var REFERRAL_CUT_REWARD = 3;
+var MAX_CUT_BALANCE = 20;
 var COOLDOWN_MS = 24 * 60 * 60 * 1e3;
 var matchTimers = /* @__PURE__ */ new Map();
 var proofTimers = /* @__PURE__ */ new Map();
@@ -41763,20 +41763,19 @@ async function checkAndApplyDailyReset(bot, telegramId) {
   const lastReset = user.lastDailyReset;
   const resetDue = !lastReset || now.getTime() - lastReset.getTime() >= COOLDOWN_MS;
   if (!resetDue) return;
-  await User.updateOne({ telegramId }, { lastDailyReset: now });
-  if (user.cutBalance < DAILY_CUT_FLOOR) {
-    await User.updateOne({ telegramId }, { cutBalance: DAILY_CUT_FLOOR });
-    console.log(`[DAILY_CUT_RESET] telegramId=${telegramId} (@${user.tiktokUsername}) reset from ${user.cutBalance} \u2192 ${DAILY_CUT_FLOOR} cuts.`);
-    try {
-      await bot.telegram.sendMessage(
-        telegramId,
-        `\u{1F381} *Cut harian anda telah direset!*
+  const prevBalance = user.cutBalance;
+  await User.updateOne({ telegramId }, { lastDailyReset: now, cutBalance: DAILY_CUT_FLOOR });
+  console.log(`[DAILY_CUT_RESET] telegramId=${telegramId} (@${user.tiktokUsername}) reset from ${prevBalance} \u2192 ${DAILY_CUT_FLOOR} cuts.`);
+  try {
+    await bot.telegram.sendMessage(
+      telegramId,
+      `\u{1F381} Fresh cuts are here!
 
-Anda kini mempunyai ${DAILY_CUT_FLOOR} cut untuk digunakan hari ini \u{1F91D}`,
-        { parse_mode: "Markdown" }
-      );
-    } catch {
-    }
+Your daily cut balance has been reset to 7 \u2728
+
+Go find your next swap buddy now \u{1F91D}`
+    );
+  } catch {
   }
 }
 async function notifyQueueUsers(bot, newUserTikTok, newUserTelegramId) {
@@ -42121,36 +42120,30 @@ async function grantReferralReward(bot, referredUserId) {
     return;
   }
   const now = /* @__PURE__ */ new Date();
-  const dailyWindowExpired = !referrer.dailyReferralResetAt || now.getTime() - referrer.dailyReferralResetAt.getTime() >= COOLDOWN_MS;
-  let cutsToday = referrer.dailyReferralCutsToday;
-  let resetAt = referrer.dailyReferralResetAt;
-  if (dailyWindowExpired) {
-    cutsToday = 0;
-    resetAt = now;
-  }
-  if (cutsToday + REFERRAL_CUT_REWARD > DAILY_REFERRAL_CAP) {
-    console.log(`[REFERRAL_DAILY_LIMIT_REACHED] telegramId=${referral.referrerId} (@${referrer.tiktokUsername}) has reached daily referral cap (${cutsToday}/${DAILY_REFERRAL_CAP}). Reward not granted for referredId=${referredUserId}.`);
+  if (referrer.cutBalance >= MAX_CUT_BALANCE) {
+    console.log(`[REFERRAL_CUT_LIMIT_REACHED] telegramId=${referral.referrerId} (@${referrer.tiktokUsername}) already at max balance (${referrer.cutBalance}/${MAX_CUT_BALANCE}). Reward skipped for referredId=${referredUserId}.`);
     await Referral.updateOne({ _id: referral._id }, { rewardGranted: true, rewardGrantedAt: now });
     return;
   }
-  const newBalance = referrer.cutBalance + REFERRAL_CUT_REWARD;
-  const newCutsToday = cutsToday + REFERRAL_CUT_REWARD;
+  const rawBalance = referrer.cutBalance + REFERRAL_CUT_REWARD;
+  const newBalance = Math.min(rawBalance, MAX_CUT_BALANCE);
+  const actualReward = newBalance - referrer.cutBalance;
+  if (actualReward < REFERRAL_CUT_REWARD) {
+    console.log(`[CUT_BALANCE_CAPPED] telegramId=${referral.referrerId} (@${referrer.tiktokUsername}) \u2014 referral reward capped from +${REFERRAL_CUT_REWARD} to +${actualReward} cuts to stay within ${MAX_CUT_BALANCE} max.`);
+  }
   await Promise.all([
-    User.updateOne(
-      { telegramId: referral.referrerId },
-      { cutBalance: newBalance, dailyReferralCutsToday: newCutsToday, dailyReferralResetAt: resetAt }
-    ),
+    User.updateOne({ telegramId: referral.referrerId }, { cutBalance: newBalance }),
     Referral.updateOne({ _id: referral._id }, { rewardGranted: true, rewardGrantedAt: now })
   ]);
-  console.log(`[REFERRAL_REWARD_GRANTED] telegramId=${referral.referrerId} (@${referrer.tiktokUsername}) received +${REFERRAL_CUT_REWARD} cuts for referredId=${referredUserId}. New balance: ${newBalance}. Daily referral cuts today: ${newCutsToday}/${DAILY_REFERRAL_CAP}.`);
+  console.log(`[REFERRAL_REWARD_GRANTED] telegramId=${referral.referrerId} (@${referrer.tiktokUsername}) received +${actualReward} cuts for referredId=${referredUserId}. New balance: ${newBalance}/${MAX_CUT_BALANCE}.`);
   try {
     await bot.telegram.sendMessage(
       referral.referrerId,
-      `\u{1F389} Kawan yang kau jemput baru sahaja selesaikan swap pertama mereka!
+      `\u{1F389} Your referral buddy just completed their first swap!
 
-*+${REFERRAL_CUT_REWARD} cuts* dah masuk balance kau! \u{1F525}
++${actualReward} cuts added to your balance \u{1F525}
 
-Cut baki: *${newBalance}*`,
+Cut balance: *${newBalance}*`,
       { parse_mode: "Markdown" }
     );
   } catch {
@@ -42199,15 +42192,15 @@ async function checkAndCompleteMatch(bot, matchId) {
       const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
       await bot.telegram.sendMessage(
         uid,
-        `\u{1F389} *Swap selesai!*
+        `\u{1F389} Swap done!
 
-Terima kasih kerana menggunakan CutSquad \u{1F91D}
+Thanks for using CutPricebot \u{1F91D}
 
-Cut baki: *0/${DAILY_CUT_FLOOR}* \u{1F62E}
+Cut balance: *0* \u{1F62E}
 
-Kau dah habis semua cuts!
+You've used all your cuts!
 
-\u{1F525} Nak lagi? Share bot ni & dapat *+${REFERRAL_CUT_REWARD} cuts* setiap orang yang join!
+\u{1F525} Refer a friend and get *+${REFERRAL_CUT_REWARD} cuts* when they complete their first swap!
 
 ${refLink}`,
         { parse_mode: "Markdown" }
@@ -42215,14 +42208,14 @@ ${refLink}`,
     } else {
       await bot.telegram.sendMessage(
         uid,
-        `\u{1F389} *Swap selesai!*
+        `\u{1F389} Swap done!
 
-Terima kasih kerana menggunakan CutSquad \u{1F91D}
+Thanks for using CutPricebot \u{1F91D}
 
-Cut baki: *${newBalance}*`,
+Cut balance: *${newBalance}*`,
         {
           parse_mode: "Markdown",
-          ...import_telegraf.Markup.inlineKeyboard([import_telegraf.Markup.button.callback("\u{1F501} Cut Lagi!", "cut_more")])
+          ...import_telegraf.Markup.inlineKeyboard([import_telegraf.Markup.button.callback("\u{1F501} Cut More!", "cut_more")])
         }
       );
     }
@@ -42334,13 +42327,13 @@ Referral link kau:
     const me = await bot.telegram.getMe();
     const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
     await ctx.reply(
-      `\u{1F525} *Referral link kau:*
+      `\u{1F525} Your referral link:
 
 ${refLink}
 
-Share ni \u2014 setiap kawan yang join & selesaikan swap pertama = *+${REFERRAL_CUT_REWARD} cuts* untuk kau!
+Share it \u2014 every friend who joins and completes their first swap = *+${REFERRAL_CUT_REWARD} cuts* for you! \u{1F381}
 
-_(Had harian: ${DAILY_REFERRAL_CAP} cuts daripada referral)_`,
+_(Max balance: ${MAX_CUT_BALANCE} cuts per account)_`,
       { parse_mode: "Markdown" }
     );
   });
