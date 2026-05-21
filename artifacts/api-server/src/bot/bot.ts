@@ -456,11 +456,11 @@ async function tryMatch(bot: Telegraf): Promise<boolean> {
 
       await Promise.all([
         bot.telegram.sendMessage(entryA.telegramId,
-          `✅ *Partner dijumpai!*\n\nPartner anda:\n@${userB?.tiktokUsername}\n\nLink cut partner:\n${entryB.pendingLink}\n\nSila cut link partner anda dahulu 🤝`,
-          { parse_mode: "Markdown", ...matchButtons }),
+          `🎉 Cut buddy found!\n\nYour partner:\n@${userB?.tiktokUsername} 👀\n\nTheir cut link:\n${entryB.pendingLink}\n\nGo show some love and finish the cut first 🤝✨`,
+          { ...matchButtons }),
         bot.telegram.sendMessage(entryB.telegramId,
-          `✅ *Partner dijumpai!*\n\nPartner anda:\n@${userA?.tiktokUsername}\n\nLink cut partner:\n${entryA.pendingLink}\n\nSila cut link partner anda dahulu 🤝`,
-          { parse_mode: "Markdown", ...matchButtons }),
+          `🎉 Cut buddy found!\n\nYour partner:\n@${userA?.tiktokUsername} 👀\n\nTheir cut link:\n${entryA.pendingLink}\n\nGo show some love and finish the cut first 🤝✨`,
+          { ...matchButtons }),
       ]);
 
       const timer = setTimeout(async () => {
@@ -1393,7 +1393,7 @@ export function createBot(): Telegraf {
       await ctx.reply("⚠️ Action already processed.");
       return;
     }
-    await ctx.reply("📸 Sila hantar *screenshot* sebagai bukti anda telah cut link partner.", { parse_mode: "Markdown" });
+    await ctx.reply("📸 Okieee now send a screenshot as proof that you've completed your partner's cut ✨");
   });
 
   bot.action("cancel_match", async (ctx) => {

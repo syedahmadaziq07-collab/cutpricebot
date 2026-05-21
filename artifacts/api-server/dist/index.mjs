@@ -42066,29 +42066,29 @@ async function tryMatch(bot) {
       await Promise.all([
         bot.telegram.sendMessage(
           entryA.telegramId,
-          `\u2705 *Partner dijumpai!*
+          `\u{1F389} Cut buddy found!
 
-Partner anda:
-@${userB?.tiktokUsername}
+Your partner:
+@${userB?.tiktokUsername} \u{1F440}
 
-Link cut partner:
+Their cut link:
 ${entryB.pendingLink}
 
-Sila cut link partner anda dahulu \u{1F91D}`,
-          { parse_mode: "Markdown", ...matchButtons }
+Go show some love and finish the cut first \u{1F91D}\u2728`,
+          { ...matchButtons }
         ),
         bot.telegram.sendMessage(
           entryB.telegramId,
-          `\u2705 *Partner dijumpai!*
+          `\u{1F389} Cut buddy found!
 
-Partner anda:
-@${userA?.tiktokUsername}
+Your partner:
+@${userA?.tiktokUsername} \u{1F440}
 
-Link cut partner:
+Their cut link:
 ${entryA.pendingLink}
 
-Sila cut link partner anda dahulu \u{1F91D}`,
-          { parse_mode: "Markdown", ...matchButtons }
+Go show some love and finish the cut first \u{1F91D}\u2728`,
+          { ...matchButtons }
         )
       ]);
       const timer = setTimeout(async () => {
@@ -42969,7 +42969,7 @@ ${refLink}`,
       await ctx.reply("\u26A0\uFE0F Action already processed.");
       return;
     }
-    await ctx.reply("\u{1F4F8} Sila hantar *screenshot* sebagai bukti anda telah cut link partner.", { parse_mode: "Markdown" });
+    await ctx.reply("\u{1F4F8} Okieee now send a screenshot as proof that you've completed your partner's cut \u2728");
   });
   bot.action("cancel_match", async (ctx) => {
     await ctx.answerCbQuery();
