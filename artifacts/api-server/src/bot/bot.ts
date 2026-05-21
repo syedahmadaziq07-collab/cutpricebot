@@ -16,8 +16,6 @@ function extractTikTokUsername(input: string): string | null {
 
   if (trimmed.startsWith("@")) return trimmed.slice(1);
 
-  // Matches with or without protocol and www, strips query params
-  // e.g. https://www.tiktok.com/@user, tiktok.com/@user, www.tiktok.com/@user?r=1
   const match = trimmed.match(
     /(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@([a-zA-Z0-9._]+)/i,
   );
@@ -63,6 +61,10 @@ async function notifyQueueUsers(
     `[QUEUE] @${newUserTikTok} joined queue. Notifying ${eligibleUsers.length} eligible user(s).`,
   );
 
+  if (eligibleUsers.length === 0) {
+    console.log(`[QUEUE] Queue empty — no eligible users to notify for @${newUserTikTok}.`);
+  }
+
   let sentCount = 0;
 
   for (const u of eligibleUsers) {
@@ -77,6 +79,7 @@ async function notifyQueueUsers(
         { lastNotifiedAt: new Date() },
       );
       sentCount++;
+      console.log(`[NOTIFY] Sent notification to telegramId=${u.telegramId} (@${u.tiktokUsername})`);
     } catch (err) {
       console.error(
         `[NOTIFY] Failed to notify telegramId=${u.telegramId}: ${(err as Error).message}`,
@@ -169,7 +172,7 @@ async function handleMatchExpiry(
     if (!user || user.state !== "in_match") continue;
     await User.updateOne(
       { telegramId: uid },
-      { state: "awaiting_cut_link", pendingLink: null },
+      { state: "awaiting_cut_link", pendingLink: null, queuedAt: null },
     );
     await bot.telegram.sendMessage(uid, expireMsg);
   }
@@ -181,18 +184,34 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
   const currentUser = await User.findOne({ telegramId });
   if (!currentUser || currentUser.state !== "in_queue") return;
 
-  const excludeIds = [telegramId];
-  if (currentUser.lastMatchPartnerId)
-    excludeIds.push(currentUser.lastMatchPartnerId);
+  const alreadyMatchedIds = currentUser.sessionMatchedPartnerIds ?? [];
+  const excludeIds = [telegramId, ...alreadyMatchedIds];
 
   const partner = await User.findOne({
     telegramId: { $nin: excludeIds },
     state: "in_queue",
     isBanned: false,
     $or: [{ suspendedUntil: null }, { suspendedUntil: { $lte: new Date() } }],
-  });
+  }).sort({ queuedAt: 1 });
 
-  if (!partner) return;
+  if (!partner) {
+    console.log(
+      `[MATCH] No partner found for @${currentUser.tiktokUsername} (telegramId=${telegramId}). Queue empty or all excluded.`,
+    );
+    return;
+  }
+
+  const partnerAlreadyMatchedIds = partner.sessionMatchedPartnerIds ?? [];
+  if (partnerAlreadyMatchedIds.includes(telegramId)) {
+    console.log(
+      `[MATCH] Duplicate ignored — @${currentUser.tiktokUsername} & @${partner.tiktokUsername} already matched this session.`,
+    );
+    return;
+  }
+
+  console.log(
+    `[MATCH] Match created: @${currentUser.tiktokUsername} (telegramId=${telegramId}) <-> @${partner.tiktokUsername} (telegramId=${partner.telegramId})`,
+  );
 
   const expiresAt = new Date(Date.now() + 4 * 60 * 1000);
   const match = await Match.create({
@@ -205,19 +224,38 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
 
   await User.updateOne(
     { telegramId },
-    { state: "in_match", lastMatchPartnerId: partner.telegramId },
+    {
+      state: "in_match",
+      lastMatchPartnerId: partner.telegramId,
+      queuedAt: null,
+      $addToSet: { sessionMatchedPartnerIds: partner.telegramId },
+    },
   );
   await User.updateOne(
     { telegramId: partner.telegramId },
-    { state: "in_match", lastMatchPartnerId: telegramId },
+    {
+      state: "in_match",
+      lastMatchPartnerId: telegramId,
+      queuedAt: null,
+      $addToSet: { sessionMatchedPartnerIds: telegramId },
+    },
   );
 
   const matchId = (match._id as { toString(): string }).toString();
 
-  const msgForUser = `🎯 *Partner jumpa!*\n\nLink dia 👇\n${partner.pendingLink}\n\n1️⃣ Tap link tu kat TikTok\n2️⃣ Screenshot bukti kau dah cut\n3️⃣ Hantar screenshot sini\n\n⏰ *4 minit je tau!*`;
-  const msgForPartner = `🎯 *Partner jumpa!*\n\nLink dia 👇\n${currentUser.pendingLink}\n\n1️⃣ Tap link tu kat TikTok\n2️⃣ Screenshot bukti kau dah cut\n3️⃣ Hantar screenshot sini\n\n⏰ *4 minit je tau!*`;
+  const msgForCurrentUser =
+    `✅ *Partner dijumpai!*\n\n` +
+    `Partner anda:\n@${partner.tiktokUsername}\n\n` +
+    `Link cut partner:\n${partner.pendingLink}\n\n` +
+    `Sila cut link partner anda dahulu 🤝`;
 
-  await bot.telegram.sendMessage(telegramId, msgForUser, {
+  const msgForPartner =
+    `✅ *Partner dijumpai!*\n\n` +
+    `Partner anda:\n@${currentUser.tiktokUsername}\n\n` +
+    `Link cut partner:\n${currentUser.pendingLink}\n\n` +
+    `Sila cut link partner anda dahulu 🤝`;
+
+  await bot.telegram.sendMessage(telegramId, msgForCurrentUser, {
     parse_mode: "Markdown",
   });
   await bot.telegram.sendMessage(partner.telegramId, msgForPartner, {
@@ -266,7 +304,7 @@ async function confirmSwap(
   const newBalance = Math.max(0, user.cutBalance - 1);
   await User.updateOne(
     { telegramId },
-    { state: "awaiting_cut_link", cutBalance: newBalance, pendingLink: null },
+    { state: "awaiting_cut_link", cutBalance: newBalance, pendingLink: null, queuedAt: null },
   );
 
   if (newBalance === 0) {
@@ -321,7 +359,7 @@ export function createBot(): Telegraf {
 
     const existingUser = await User.findOne({ telegramId });
 
-    if (existingUser && existingUser.tiktokUsername) {
+    if (existingUser && existingUser.tiktokUsername && existingUser.tiktokUsername !== "__pending__") {
       const sus = await checkSuspension(telegramId);
       if (sus.suspended) {
         await ctx.reply(sus.message);
@@ -562,12 +600,13 @@ export function createBot(): Telegraf {
         return;
       }
 
+      const now = new Date();
       await User.updateOne(
         { telegramId },
-        { state: "in_queue", pendingLink: text },
+        { state: "in_queue", pendingLink: text, queuedAt: now },
       );
 
-      console.log(`[QUEUE] telegramId=${telegramId} (@${user.tiktokUsername}) joined the queue.`);
+      console.log(`[QUEUE] telegramId=${telegramId} (@${user.tiktokUsername}) joined the queue at ${now.toISOString()}.`);
 
       await ctx.reply(
         "Secured! 🔒 Finding ur partner…\n\n_(Kau dalam queue — bot tengah cari match sekarang)_",
