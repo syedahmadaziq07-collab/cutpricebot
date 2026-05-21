@@ -42219,6 +42219,47 @@ _(Had harian: ${DAILY_REFERRAL_CAP} cuts daripada referral)_`,
 
 ` + lines.join("\n\n"), { parse_mode: "Markdown" });
   });
+  bot.command("clear_match_history", async (ctx) => {
+    const adminIds = (process.env["ADMIN_IDS"] ?? "").split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
+    if (!adminIds.includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    if (args.length === 0) {
+      const since = new Date(Date.now() - COOLDOWN_MS);
+      const result = await MatchHistory.deleteMany({ matchedAt: { $gte: since } });
+      console.log(`[ADMIN] clear_match_history: wiped ${result.deletedCount} record(s) from last 24h by telegramId=${ctx.from.id}`);
+      await ctx.reply(`\u{1F5D1}\uFE0F Cleared *${result.deletedCount}* match history record(s) from the last 24 hours.`, { parse_mode: "Markdown" });
+      return;
+    }
+    if (args.length === 2) {
+      const usernameA = args[0].replace(/^@/, "");
+      const usernameB = args[1].replace(/^@/, "");
+      const [uA, uB] = await Promise.all([
+        User.findOne({ tiktokUsername: usernameA }).select("telegramId"),
+        User.findOne({ tiktokUsername: usernameB }).select("telegramId")
+      ]);
+      if (!uA) {
+        await ctx.reply(`\u274C User @${usernameA} not found.`);
+        return;
+      }
+      if (!uB) {
+        await ctx.reply(`\u274C User @${usernameB} not found.`);
+        return;
+      }
+      const pairKey = [uA.telegramId, uB.telegramId].sort((a, b) => a - b).join(":");
+      const result = await MatchHistory.deleteMany({ pairKey });
+      console.log(`[ADMIN] clear_match_history: wiped ${result.deletedCount} record(s) for pairKey=${pairKey} (@${usernameA} \u2194\uFE0F @${usernameB}) by telegramId=${ctx.from.id}`);
+      await ctx.reply(`\u{1F5D1}\uFE0F Cleared *${result.deletedCount}* history record(s) for @${usernameA} \u2194\uFE0F @${usernameB}
+\`pairKey: ${pairKey}\``, { parse_mode: "Markdown" });
+      return;
+    }
+    await ctx.reply(
+      "\u2139\uFE0F Usage:\n`/clear_match_history` \u2014 clear all last-24h history\n`/clear_match_history @userA @userB` \u2014 clear history for a specific pair",
+      { parse_mode: "Markdown" }
+    );
+  });
   bot.command("status", async (ctx) => {
     const user = await User.findOne({ telegramId: ctx.from.id });
     if (!user || user.tiktokUsername === "__pending__") {

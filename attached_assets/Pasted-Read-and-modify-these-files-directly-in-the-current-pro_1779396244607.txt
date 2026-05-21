@@ -1,0 +1,88 @@
+Read and modify these files directly in the current project:
+- artifacts/api-server/src/bot/bot.ts
+- artifacts/api-server/src/bot/models/matchHistory.ts
+
+Make all changes below:
+
+─────────────────────────────
+CHANGE 1 — Update matchHistory model
+─────────────────────────────
+In artifacts/api-server/src/bot/models/matchHistory.ts
+Add pairKey field if not already there:
+  pairKey: { type: String, index: true }
+
+─────────────────────────────
+CHANGE 2 — Add hasRecentMatch helper
+─────────────────────────────
+In bot.ts, replace the existing hasCooldown function with this:
+
+async function hasRecentMatch(userIdA: number, userIdB: number): Promise<boolean> {
+  const since = new Date(Date.now() - COOLDOWN_MS);
+  const pairKey = [userIdA, userIdB].sort((a, b) => a - b).join(":");
+  const existing = await MatchHistory.findOne({ pairKey, matchedAt: { $gte: since } });
+  if (!existing) {
+    console.log(`[REMATCH_ALLOWED_AFTER_24H] pairKey=${pairKey} — eligible.`);
+  }
+  return existing !== null;
+}
+
+Update all calls from hasCooldown(...) to hasRecentMatch(...) in the file.
+
+─────────────────────────────
+CHANGE 3 — Fix tryMatch cooldown block
+─────────────────────────────
+In tryMatch(), find the block that calls hasCooldown/hasRecentMatch.
+Replace the entire if (onCooldown) block with:
+
+      const onCooldown = await hasRecentMatch(entryA.telegramId, entryB.telegramId);
+      if (onCooldown) {
+        console.log(`[RECENT_PAIR_BLOCKED] telegramId=${entryA.telegramId} & ${entryB.telegramId} — skipping, trying next pair.`);
+        console.log(`[NEXT_PARTNER_SEARCH] Searching for other eligible partners...`);
+        continue;
+      }
+
+─────────────────────────────
+CHANGE 4 — Save pairKey in MatchHistory.create
+─────────────────────────────
+In tryMatch(), find MatchHistory.create call.
+Replace with:
+
+MatchHistory.create({
+  userIdA: entryA.telegramId,
+  userIdB: entryB.telegramId,
+  pairKey: [entryA.telegramId, entryB.telegramId].sort((a, b) => a - b).join(":"),
+  matchedAt: now,
+}),
+
+Add this log after the create:
+console.log(`[MATCH_HISTORY_CREATED] pairKey=${[entryA.telegramId, entryB.telegramId].sort((a,b)=>a-b).join(":")} matchedAt=${now.toISOString()}`);
+
+─────────────────────────────
+CHANGE 5 — Filter notifications in notifyQueueUsers
+─────────────────────────────
+In notifyQueueUsers(), find where eligibleUsers are fetched.
+After fetching eligibleUsers, add this filter before the send loop:
+
+  const filtered = await Promise.all(
+    eligibleUsers.map(async (u) => {
+      const recent = await hasRecentMatch(u.telegramId, newUserTelegramId);
+      if (recent) {
+        console.log(`[NOTIFICATION_SKIPPED_RECENT_PAIR] Skipping notification to telegramId=${u.telegramId} — recent match with telegramId=${newUserTelegramId}`);
+        return null;
+      }
+      return u;
+    })
+  );
+  const usersToNotify = filtered.filter(Boolean);
+
+Then replace the existing loop:
+  for (const u of eligibleUsers) {
+with:
+  for (const u of usersToNotify) {
+
+─────────────────────────────
+After all changes:
+- Build the project
+- Commit with message: "fix: pairKey repeat prevention + notification filter"
+- Push to GitHub main
+─────────────────────────────
