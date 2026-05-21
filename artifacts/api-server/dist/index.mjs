@@ -37624,6 +37624,1350 @@ var require_filters2 = __commonJS({
   }
 });
 
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/create-id.js
+var require_create_id = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/create-id.js"(exports) {
+    "use strict";
+    var __importDefault = exports && exports.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.createID = createID;
+    var node_crypto_1 = __importDefault(__require("node:crypto"));
+    function createID(prefix = "", length = 16) {
+      const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+      const values = node_crypto_1.default.randomBytes(length);
+      const id = Array.from(values, (v) => charset[v % charset.length]).join("");
+      return prefix ? `${prefix}-${id}` : id;
+    }
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/logger.js
+var require_logger2 = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/logger.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    var levelColors = {
+      INFO: "\x1B[36m",
+      WARN: "\x1B[33m",
+      ERROR: "\x1B[31m",
+      DEBUG: "\x1B[35m"
+    };
+    var GREEN = "\x1B[32m";
+    var RESET = "\x1B[0m";
+    function log(level, message2, extra) {
+      const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+      const color = levelColors[level] ?? "";
+      const prefix = `[${timestamp}] [PID: ${process.pid}] ${GREEN}[NODE-CRON]${GREEN} ${color}[${level}]${RESET}`;
+      const output = `${prefix} ${message2}`;
+      switch (level) {
+        case "ERROR":
+          console.error(output, extra ?? "");
+          break;
+        case "DEBUG":
+          console.debug(output, extra ?? "");
+          break;
+        case "WARN":
+          console.warn(output);
+          break;
+        case "INFO":
+        default:
+          console.info(output);
+          break;
+      }
+    }
+    var logger2 = {
+      info(message2) {
+        log("INFO", message2);
+      },
+      warn(message2) {
+        log("WARN", message2);
+      },
+      error(message2, err) {
+        if (message2 instanceof Error) {
+          log("ERROR", message2.message, message2);
+        } else {
+          log("ERROR", message2, err);
+        }
+      },
+      debug(message2, err) {
+        if (message2 instanceof Error) {
+          log("DEBUG", message2.message, message2);
+        } else {
+          log("DEBUG", message2, err);
+        }
+      }
+    };
+    exports.default = logger2;
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/promise/tracked-promise.js
+var require_tracked_promise = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/promise/tracked-promise.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.TrackedPromise = void 0;
+    var TrackedPromise = class {
+      promise;
+      error;
+      state;
+      value;
+      constructor(executor) {
+        this.state = "pending";
+        this.promise = new Promise((resolve, reject) => {
+          executor((value) => {
+            this.state = "fulfilled";
+            this.value = value;
+            resolve(value);
+          }, (error) => {
+            this.state = "rejected";
+            this.error = error;
+            reject(error);
+          });
+        });
+      }
+      getPromise() {
+        return this.promise;
+      }
+      getState() {
+        return this.state;
+      }
+      isPending() {
+        return this.state === "pending";
+      }
+      isFulfilled() {
+        return this.state === "fulfilled";
+      }
+      isRejected() {
+        return this.state === "rejected";
+      }
+      getValue() {
+        return this.value;
+      }
+      getError() {
+        return this.error;
+      }
+      then(onfulfilled, onrejected) {
+        return this.promise.then(onfulfilled, onrejected);
+      }
+      catch(onrejected) {
+        return this.promise.catch(onrejected);
+      }
+      finally(onfinally) {
+        return this.promise.finally(onfinally);
+      }
+    };
+    exports.TrackedPromise = TrackedPromise;
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/scheduler/runner.js
+var require_runner = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/scheduler/runner.js"(exports) {
+    "use strict";
+    var __importDefault = exports && exports.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.Runner = void 0;
+    var create_id_1 = require_create_id();
+    var logger_1 = __importDefault(require_logger2());
+    var tracked_promise_1 = require_tracked_promise();
+    function emptyOnFn() {
+    }
+    function emptyHookFn() {
+      return true;
+    }
+    function defaultOnError(date, error) {
+      logger_1.default.error("Task failed with error!", error);
+    }
+    var Runner = class {
+      timeMatcher;
+      onMatch;
+      noOverlap;
+      maxExecutions;
+      maxRandomDelay;
+      runCount;
+      running;
+      heartBeatTimeout;
+      onMissedExecution;
+      onOverlap;
+      onError;
+      beforeRun;
+      onFinished;
+      onMaxExecutions;
+      constructor(timeMatcher, onMatch, options) {
+        this.timeMatcher = timeMatcher;
+        this.onMatch = onMatch;
+        this.noOverlap = options == void 0 || options.noOverlap === void 0 ? false : options.noOverlap;
+        this.maxExecutions = options?.maxExecutions;
+        this.maxRandomDelay = options?.maxRandomDelay || 0;
+        this.onMissedExecution = options?.onMissedExecution || emptyOnFn;
+        this.onOverlap = options?.onOverlap || emptyOnFn;
+        this.onError = options?.onError || defaultOnError;
+        this.onFinished = options?.onFinished || emptyHookFn;
+        this.beforeRun = options?.beforeRun || emptyHookFn;
+        this.onMaxExecutions = options?.onMaxExecutions || emptyOnFn;
+        this.runCount = 0;
+        this.running = false;
+      }
+      start() {
+        this.running = true;
+        let lastExecution;
+        let expectedNextExecution;
+        const scheduleNextHeartBeat = (currentDate) => {
+          if (this.running) {
+            clearTimeout(this.heartBeatTimeout);
+            this.heartBeatTimeout = setTimeout(heartBeat, getDelay(this.timeMatcher, currentDate));
+          }
+        };
+        const runTask = (date) => {
+          return new Promise(async (resolve) => {
+            const execution = {
+              id: (0, create_id_1.createID)("exec"),
+              reason: "scheduled"
+            };
+            const shouldExecute = await this.beforeRun(date, execution);
+            const randomDelay = Math.floor(Math.random() * this.maxRandomDelay);
+            if (shouldExecute) {
+              setTimeout(async () => {
+                try {
+                  this.runCount++;
+                  execution.startedAt = /* @__PURE__ */ new Date();
+                  const result = await this.onMatch(date, execution);
+                  execution.finishedAt = /* @__PURE__ */ new Date();
+                  execution.result = result;
+                  this.onFinished(date, execution);
+                  if (this.maxExecutions && this.runCount >= this.maxExecutions) {
+                    this.onMaxExecutions(date);
+                    this.stop();
+                  }
+                } catch (error) {
+                  execution.finishedAt = /* @__PURE__ */ new Date();
+                  execution.error = error;
+                  this.onError(date, error, execution);
+                }
+                resolve(true);
+              }, randomDelay);
+            }
+          });
+        };
+        const checkAndRun = (date) => {
+          return new tracked_promise_1.TrackedPromise(async (resolve, reject) => {
+            try {
+              if (this.timeMatcher.match(date)) {
+                await runTask(date);
+              }
+              resolve(true);
+            } catch (err) {
+              reject(err);
+            }
+          });
+        };
+        const heartBeat = async () => {
+          const currentDate = nowWithoutMs();
+          if (expectedNextExecution && expectedNextExecution.getTime() < currentDate.getTime()) {
+            while (expectedNextExecution.getTime() < currentDate.getTime()) {
+              logger_1.default.warn(`missed execution at ${expectedNextExecution}! Possible blocking IO or high CPU user at the same process used by node-cron.`);
+              expectedNextExecution = this.timeMatcher.getNextMatch(expectedNextExecution);
+              runAsync(this.onMissedExecution, expectedNextExecution, defaultOnError);
+            }
+          }
+          if (lastExecution && lastExecution.getState() === "pending") {
+            runAsync(this.onOverlap, currentDate, defaultOnError);
+            if (this.noOverlap) {
+              logger_1.default.warn("task still running, new execution blocked by overlap prevention!");
+              expectedNextExecution = this.timeMatcher.getNextMatch(currentDate);
+              scheduleNextHeartBeat(currentDate);
+              return;
+            }
+          }
+          lastExecution = checkAndRun(currentDate);
+          expectedNextExecution = this.timeMatcher.getNextMatch(currentDate);
+          scheduleNextHeartBeat(currentDate);
+        };
+        this.heartBeatTimeout = setTimeout(() => {
+          heartBeat();
+        }, getDelay(this.timeMatcher, nowWithoutMs()));
+      }
+      nextRun() {
+        return this.timeMatcher.getNextMatch(/* @__PURE__ */ new Date());
+      }
+      stop() {
+        this.running = false;
+        if (this.heartBeatTimeout) {
+          clearTimeout(this.heartBeatTimeout);
+          this.heartBeatTimeout = void 0;
+        }
+      }
+      isStarted() {
+        return !!this.heartBeatTimeout && this.running;
+      }
+      isStopped() {
+        return !this.isStarted();
+      }
+      async execute() {
+        const date = /* @__PURE__ */ new Date();
+        const execution = {
+          id: (0, create_id_1.createID)("exec"),
+          reason: "invoked"
+        };
+        try {
+          const shouldExecute = await this.beforeRun(date, execution);
+          if (shouldExecute) {
+            this.runCount++;
+            execution.startedAt = /* @__PURE__ */ new Date();
+            const result = await this.onMatch(date, execution);
+            execution.finishedAt = /* @__PURE__ */ new Date();
+            execution.result = result;
+            this.onFinished(date, execution);
+          }
+        } catch (error) {
+          execution.finishedAt = /* @__PURE__ */ new Date();
+          execution.error = error;
+          this.onError(date, error, execution);
+        }
+      }
+    };
+    exports.Runner = Runner;
+    async function runAsync(fn, date, onError) {
+      try {
+        await fn(date);
+      } catch (error) {
+        onError(date, error);
+      }
+    }
+    function getDelay(timeMatcher, currentDate) {
+      const maxDelay = 864e5;
+      const nextRun = timeMatcher.getNextMatch(currentDate);
+      const now = /* @__PURE__ */ new Date();
+      const delay = nextRun.getTime() - now.getTime();
+      if (delay > maxDelay) {
+        return maxDelay;
+      }
+      return Math.max(0, delay);
+    }
+    function nowWithoutMs() {
+      const date = /* @__PURE__ */ new Date();
+      date.setMilliseconds(0);
+      return date;
+    }
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/pattern/convertion/month-names-conversion.js
+var require_month_names_conversion = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/pattern/convertion/month-names-conversion.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.default = /* @__PURE__ */ (() => {
+      const months = [
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december"
+      ];
+      const shortMonths = [
+        "jan",
+        "feb",
+        "mar",
+        "apr",
+        "may",
+        "jun",
+        "jul",
+        "aug",
+        "sep",
+        "oct",
+        "nov",
+        "dec"
+      ];
+      function convertMonthName(expression, items) {
+        for (let i = 0; i < items.length; i++) {
+          expression = expression.replace(new RegExp(items[i], "gi"), i + 1);
+        }
+        return expression;
+      }
+      function interprete(monthExpression) {
+        monthExpression = convertMonthName(monthExpression, months);
+        monthExpression = convertMonthName(monthExpression, shortMonths);
+        return monthExpression;
+      }
+      return interprete;
+    })();
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/pattern/convertion/week-day-names-conversion.js
+var require_week_day_names_conversion = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/pattern/convertion/week-day-names-conversion.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.default = /* @__PURE__ */ (() => {
+      const weekDays = [
+        "sunday",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday"
+      ];
+      const shortWeekDays = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+      function convertWeekDayName(expression, items) {
+        for (let i = 0; i < items.length; i++) {
+          expression = expression.replace(new RegExp(items[i], "gi"), i);
+        }
+        return expression;
+      }
+      function convertWeekDays(expression) {
+        expression = expression.replace("7", "0");
+        expression = convertWeekDayName(expression, weekDays);
+        return convertWeekDayName(expression, shortWeekDays);
+      }
+      return convertWeekDays;
+    })();
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/pattern/convertion/asterisk-to-range-conversion.js
+var require_asterisk_to_range_conversion = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/pattern/convertion/asterisk-to-range-conversion.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.default = /* @__PURE__ */ (() => {
+      function convertAsterisk(expression, replecement) {
+        if (expression.indexOf("*") !== -1) {
+          return expression.replace("*", replecement);
+        }
+        return expression;
+      }
+      function convertAsterisksToRanges(expressions) {
+        expressions[0] = convertAsterisk(expressions[0], "0-59");
+        expressions[1] = convertAsterisk(expressions[1], "0-59");
+        expressions[2] = convertAsterisk(expressions[2], "0-23");
+        expressions[3] = convertAsterisk(expressions[3], "1-31");
+        expressions[4] = convertAsterisk(expressions[4], "1-12");
+        expressions[5] = convertAsterisk(expressions[5], "0-6");
+        return expressions;
+      }
+      return convertAsterisksToRanges;
+    })();
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/pattern/convertion/range-conversion.js
+var require_range_conversion = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/pattern/convertion/range-conversion.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.default = /* @__PURE__ */ (() => {
+      function replaceWithRange(expression, text, init, end, stepTxt) {
+        const step = parseInt(stepTxt);
+        const numbers = [];
+        let last = parseInt(end);
+        let first = parseInt(init);
+        if (first > last) {
+          last = parseInt(init);
+          first = parseInt(end);
+        }
+        for (let i = first; i <= last; i += step) {
+          numbers.push(i);
+        }
+        return expression.replace(new RegExp(text, "i"), numbers.join());
+      }
+      function convertRange(expression) {
+        const rangeRegEx = /(\d+)-(\d+)(\/(\d+)|)/;
+        let match = rangeRegEx.exec(expression);
+        while (match !== null && match.length > 0) {
+          expression = replaceWithRange(expression, match[0], match[1], match[2], match[4] || "1");
+          match = rangeRegEx.exec(expression);
+        }
+        return expression;
+      }
+      function convertAllRanges(expressions) {
+        for (let i = 0; i < expressions.length; i++) {
+          expressions[i] = convertRange(expressions[i]);
+        }
+        return expressions;
+      }
+      return convertAllRanges;
+    })();
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/pattern/convertion/index.js
+var require_convertion = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/pattern/convertion/index.js"(exports) {
+    "use strict";
+    var __importDefault = exports && exports.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports, "__esModule", { value: true });
+    var month_names_conversion_1 = __importDefault(require_month_names_conversion());
+    var week_day_names_conversion_1 = __importDefault(require_week_day_names_conversion());
+    var asterisk_to_range_conversion_1 = __importDefault(require_asterisk_to_range_conversion());
+    var range_conversion_1 = __importDefault(require_range_conversion());
+    exports.default = /* @__PURE__ */ (() => {
+      function appendSeccondExpression(expressions) {
+        if (expressions.length === 5) {
+          return ["0"].concat(expressions);
+        }
+        return expressions;
+      }
+      function removeSpaces(str) {
+        return str.replace(/\s{2,}/g, " ").trim();
+      }
+      function normalizeIntegers(expressions) {
+        for (let i = 0; i < expressions.length; i++) {
+          const numbers = expressions[i].split(",");
+          for (let j = 0; j < numbers.length; j++) {
+            numbers[j] = parseInt(numbers[j]);
+          }
+          expressions[i] = numbers;
+        }
+        return expressions;
+      }
+      function interprete(expression) {
+        let expressions = removeSpaces(`${expression}`).split(" ");
+        expressions = appendSeccondExpression(expressions);
+        expressions[4] = (0, month_names_conversion_1.default)(expressions[4]);
+        expressions[5] = (0, week_day_names_conversion_1.default)(expressions[5]);
+        expressions = (0, asterisk_to_range_conversion_1.default)(expressions);
+        expressions = (0, range_conversion_1.default)(expressions);
+        expressions = normalizeIntegers(expressions);
+        return expressions;
+      }
+      return interprete;
+    })();
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/time/localized-time.js
+var require_localized_time = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/time/localized-time.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.LocalizedTime = void 0;
+    var LocalizedTime = class {
+      timestamp;
+      parts;
+      timezone;
+      constructor(date, timezone) {
+        this.timestamp = date.getTime();
+        this.timezone = timezone;
+        this.parts = buildDateParts(date, timezone);
+      }
+      toDate() {
+        return new Date(this.timestamp);
+      }
+      toISO() {
+        const gmt = this.parts.gmt.replace(/^GMT/, "");
+        const offset = gmt ? gmt : "Z";
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${this.parts.year}-${pad(this.parts.month)}-${pad(this.parts.day)}T${pad(this.parts.hour)}:${pad(this.parts.minute)}:${pad(this.parts.second)}.${String(this.parts.milisecond).padStart(3, "0")}` + offset;
+      }
+      getParts() {
+        return this.parts;
+      }
+      set(field, value) {
+        this.parts[field] = value;
+        const newDate = new Date(this.toISO());
+        this.timestamp = newDate.getTime();
+        this.parts = buildDateParts(newDate, this.timezone);
+      }
+    };
+    exports.LocalizedTime = LocalizedTime;
+    function buildDateParts(date, timezone) {
+      const dftOptions = {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        weekday: "short",
+        hour12: false
+      };
+      if (timezone) {
+        dftOptions.timeZone = timezone;
+      }
+      const dateFormat = new Intl.DateTimeFormat("en-US", dftOptions);
+      const parts = dateFormat.formatToParts(date).filter((part) => {
+        return part.type !== "literal";
+      }).reduce((acc, part) => {
+        acc[part.type] = part.value;
+        return acc;
+      }, {});
+      return {
+        day: parseInt(parts.day),
+        month: parseInt(parts.month),
+        year: parseInt(parts.year),
+        hour: parts.hour === "24" ? 0 : parseInt(parts.hour),
+        minute: parseInt(parts.minute),
+        second: parseInt(parts.second),
+        milisecond: date.getMilliseconds(),
+        weekday: parts.weekday,
+        gmt: getTimezoneGMT(date, timezone)
+      };
+    }
+    function getTimezoneGMT(date, timezone) {
+      const utcDate = new Date(date.toLocaleString("en-US", { timeZone: "UTC" }));
+      const tzDate = new Date(date.toLocaleString("en-US", { timeZone: timezone }));
+      let offsetInMinutes = (utcDate.getTime() - tzDate.getTime()) / 6e4;
+      const sign = offsetInMinutes <= 0 ? "+" : "-";
+      offsetInMinutes = Math.abs(offsetInMinutes);
+      if (offsetInMinutes === 0)
+        return "Z";
+      const hours = Math.floor(offsetInMinutes / 60).toString().padStart(2, "0");
+      const minutes = Math.floor(offsetInMinutes % 60).toString().padStart(2, "0");
+      return `GMT${sign}${hours}:${minutes}`;
+    }
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/time/matcher-walker.js
+var require_matcher_walker = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/time/matcher-walker.js"(exports) {
+    "use strict";
+    var __importDefault = exports && exports.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.MatcherWalker = void 0;
+    var convertion_1 = __importDefault(require_convertion());
+    var localized_time_1 = require_localized_time();
+    var time_matcher_1 = require_time_matcher();
+    var week_day_names_conversion_1 = __importDefault(require_week_day_names_conversion());
+    var MatcherWalker = class {
+      cronExpression;
+      baseDate;
+      pattern;
+      expressions;
+      timeMatcher;
+      timezone;
+      constructor(cronExpression, baseDate, timezone) {
+        this.cronExpression = cronExpression;
+        this.baseDate = baseDate;
+        this.timeMatcher = new time_matcher_1.TimeMatcher(cronExpression, timezone);
+        this.timezone = timezone;
+        this.expressions = (0, convertion_1.default)(cronExpression);
+      }
+      isMatching() {
+        return this.timeMatcher.match(this.baseDate);
+      }
+      matchNext() {
+        const findNextDateIgnoringWeekday = () => {
+          const baseDate = new Date(this.baseDate.getTime());
+          baseDate.setMilliseconds(0);
+          const localTime = new localized_time_1.LocalizedTime(baseDate, this.timezone);
+          const dateParts = localTime.getParts();
+          const date2 = new localized_time_1.LocalizedTime(localTime.toDate(), this.timezone);
+          const seconds = this.expressions[0];
+          const nextSecond = availableValue(seconds, dateParts.second);
+          if (nextSecond) {
+            date2.set("second", nextSecond);
+            if (this.timeMatcher.match(date2.toDate())) {
+              return date2;
+            }
+          }
+          date2.set("second", seconds[0]);
+          const minutes = this.expressions[1];
+          const nextMinute = availableValue(minutes, dateParts.minute);
+          if (nextMinute) {
+            date2.set("minute", nextMinute);
+            if (this.timeMatcher.match(date2.toDate())) {
+              return date2;
+            }
+          }
+          date2.set("minute", minutes[0]);
+          const hours = this.expressions[2];
+          const nextHour = availableValue(hours, dateParts.hour);
+          if (nextHour) {
+            date2.set("hour", nextHour);
+            if (this.timeMatcher.match(date2.toDate())) {
+              return date2;
+            }
+          }
+          date2.set("hour", hours[0]);
+          const days = this.expressions[3];
+          const nextDay = availableValue(days, dateParts.day);
+          if (nextDay) {
+            date2.set("day", nextDay);
+            if (this.timeMatcher.match(date2.toDate())) {
+              return date2;
+            }
+          }
+          date2.set("day", days[0]);
+          const months = this.expressions[4];
+          const nextMonth = availableValue(months, dateParts.month);
+          if (nextMonth) {
+            date2.set("month", nextMonth);
+            if (this.timeMatcher.match(date2.toDate())) {
+              return date2;
+            }
+          }
+          date2.set("year", date2.getParts().year + 1);
+          date2.set("month", months[0]);
+          return date2;
+        };
+        const date = findNextDateIgnoringWeekday();
+        const weekdays = this.expressions[5];
+        let currentWeekday = parseInt((0, week_day_names_conversion_1.default)(date.getParts().weekday));
+        while (!(weekdays.indexOf(currentWeekday) > -1)) {
+          date.set("year", date.getParts().year + 1);
+          currentWeekday = parseInt((0, week_day_names_conversion_1.default)(date.getParts().weekday));
+        }
+        return date;
+      }
+    };
+    exports.MatcherWalker = MatcherWalker;
+    function availableValue(values, currentValue) {
+      const availableValues = values.sort((a, b) => a - b).filter((s) => s > currentValue);
+      if (availableValues.length > 0)
+        return availableValues[0];
+      return false;
+    }
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/time/time-matcher.js
+var require_time_matcher = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/time/time-matcher.js"(exports) {
+    "use strict";
+    var __importDefault = exports && exports.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.TimeMatcher = void 0;
+    var index_1 = __importDefault(require_convertion());
+    var week_day_names_conversion_1 = __importDefault(require_week_day_names_conversion());
+    var localized_time_1 = require_localized_time();
+    var matcher_walker_1 = require_matcher_walker();
+    function matchValue(allowedValues, value) {
+      return allowedValues.indexOf(value) !== -1;
+    }
+    var TimeMatcher = class {
+      timezone;
+      pattern;
+      expressions;
+      constructor(pattern, timezone) {
+        this.timezone = timezone;
+        this.pattern = pattern;
+        this.expressions = (0, index_1.default)(pattern);
+      }
+      match(date) {
+        const localizedTime = new localized_time_1.LocalizedTime(date, this.timezone);
+        const parts = localizedTime.getParts();
+        const runOnSecond = matchValue(this.expressions[0], parts.second);
+        const runOnMinute = matchValue(this.expressions[1], parts.minute);
+        const runOnHour = matchValue(this.expressions[2], parts.hour);
+        const runOnDay = matchValue(this.expressions[3], parts.day);
+        const runOnMonth = matchValue(this.expressions[4], parts.month);
+        const runOnWeekDay = matchValue(this.expressions[5], parseInt((0, week_day_names_conversion_1.default)(parts.weekday)));
+        return runOnSecond && runOnMinute && runOnHour && runOnDay && runOnMonth && runOnWeekDay;
+      }
+      getNextMatch(date) {
+        const walker = new matcher_walker_1.MatcherWalker(this.pattern, date, this.timezone);
+        const next = walker.matchNext();
+        return next.toDate();
+      }
+    };
+    exports.TimeMatcher = TimeMatcher;
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/tasks/state-machine.js
+var require_state_machine = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/tasks/state-machine.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.StateMachine = void 0;
+    var allowedTransitions = {
+      "stopped": ["stopped", "idle", "destroyed"],
+      "idle": ["idle", "running", "stopped", "destroyed"],
+      "running": ["running", "idle", "stopped", "destroyed"],
+      "destroyed": ["destroyed"]
+    };
+    var StateMachine = class {
+      state;
+      constructor(initial = "stopped") {
+        this.state = initial;
+      }
+      changeState(state) {
+        if (allowedTransitions[this.state].includes(state)) {
+          this.state = state;
+        } else {
+          throw new Error(`invalid transition from ${this.state} to ${state}`);
+        }
+      }
+    };
+    exports.StateMachine = StateMachine;
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/tasks/inline-scheduled-task.js
+var require_inline_scheduled_task = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/tasks/inline-scheduled-task.js"(exports) {
+    "use strict";
+    var __importDefault = exports && exports.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.InlineScheduledTask = void 0;
+    var events_1 = __importDefault(__require("events"));
+    var runner_1 = require_runner();
+    var time_matcher_1 = require_time_matcher();
+    var create_id_1 = require_create_id();
+    var state_machine_1 = require_state_machine();
+    var logger_1 = __importDefault(require_logger2());
+    var localized_time_1 = require_localized_time();
+    var TaskEmitter = class extends events_1.default {
+    };
+    var InlineScheduledTask = class {
+      emitter;
+      cronExpression;
+      timeMatcher;
+      runner;
+      id;
+      name;
+      stateMachine;
+      timezone;
+      constructor(cronExpression, taskFn, options) {
+        this.emitter = new TaskEmitter();
+        this.cronExpression = cronExpression;
+        this.id = (0, create_id_1.createID)("task", 12);
+        this.name = options?.name || this.id;
+        this.timezone = options?.timezone;
+        this.timeMatcher = new time_matcher_1.TimeMatcher(cronExpression, options?.timezone);
+        this.stateMachine = new state_machine_1.StateMachine();
+        const runnerOptions = {
+          timezone: options?.timezone,
+          noOverlap: options?.noOverlap,
+          maxExecutions: options?.maxExecutions,
+          maxRandomDelay: options?.maxRandomDelay,
+          beforeRun: (date, execution) => {
+            if (execution.reason === "scheduled") {
+              this.changeState("running");
+            }
+            this.emitter.emit("execution:started", this.createContext(date, execution));
+            return true;
+          },
+          onFinished: (date, execution) => {
+            if (execution.reason === "scheduled") {
+              this.changeState("idle");
+            }
+            this.emitter.emit("execution:finished", this.createContext(date, execution));
+            return true;
+          },
+          onError: (date, error, execution) => {
+            logger_1.default.error(error);
+            this.emitter.emit("execution:failed", this.createContext(date, execution));
+            this.changeState("idle");
+          },
+          onOverlap: (date) => {
+            this.emitter.emit("execution:overlap", this.createContext(date));
+          },
+          onMissedExecution: (date) => {
+            this.emitter.emit("execution:missed", this.createContext(date));
+          },
+          onMaxExecutions: (date) => {
+            this.emitter.emit("execution:maxReached", this.createContext(date));
+            this.destroy();
+          }
+        };
+        this.runner = new runner_1.Runner(this.timeMatcher, (date, execution) => {
+          return taskFn(this.createContext(date, execution));
+        }, runnerOptions);
+      }
+      getNextRun() {
+        if (this.stateMachine.state !== "stopped") {
+          return this.runner.nextRun();
+        }
+        return null;
+      }
+      changeState(state) {
+        if (this.runner.isStarted()) {
+          this.stateMachine.changeState(state);
+        }
+      }
+      start() {
+        if (this.runner.isStopped()) {
+          this.runner.start();
+          this.stateMachine.changeState("idle");
+          this.emitter.emit("task:started", this.createContext(/* @__PURE__ */ new Date()));
+        }
+      }
+      stop() {
+        if (this.runner.isStarted()) {
+          this.runner.stop();
+          this.stateMachine.changeState("stopped");
+          this.emitter.emit("task:stopped", this.createContext(/* @__PURE__ */ new Date()));
+        }
+      }
+      getStatus() {
+        return this.stateMachine.state;
+      }
+      destroy() {
+        if (this.stateMachine.state === "destroyed")
+          return;
+        this.stop();
+        this.stateMachine.changeState("destroyed");
+        this.emitter.emit("task:destroyed", this.createContext(/* @__PURE__ */ new Date()));
+      }
+      execute() {
+        return new Promise((resolve, reject) => {
+          const onFail = (context) => {
+            this.off("execution:finished", onFail);
+            reject(context.execution?.error);
+          };
+          const onFinished = (context) => {
+            this.off("execution:failed", onFail);
+            resolve(context.execution?.result);
+          };
+          this.once("execution:finished", onFinished);
+          this.once("execution:failed", onFail);
+          this.runner.execute();
+        });
+      }
+      on(event, fun) {
+        this.emitter.on(event, fun);
+      }
+      off(event, fun) {
+        this.emitter.off(event, fun);
+      }
+      once(event, fun) {
+        this.emitter.once(event, fun);
+      }
+      createContext(executionDate, execution) {
+        const localTime = new localized_time_1.LocalizedTime(executionDate, this.timezone);
+        const ctx = {
+          date: localTime.toDate(),
+          dateLocalIso: localTime.toISO(),
+          triggeredAt: /* @__PURE__ */ new Date(),
+          task: this,
+          execution
+        };
+        return ctx;
+      }
+    };
+    exports.InlineScheduledTask = InlineScheduledTask;
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/task-registry.js
+var require_task_registry = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/task-registry.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.TaskRegistry = void 0;
+    var tasks = /* @__PURE__ */ new Map();
+    var TaskRegistry = class {
+      add(task) {
+        if (this.has(task.id)) {
+          throw Error(`task ${task.id} already registred!`);
+        }
+        tasks.set(task.id, task);
+        task.on("task:destroyed", () => {
+          this.remove(task);
+        });
+      }
+      get(taskId) {
+        return tasks.get(taskId);
+      }
+      remove(task) {
+        if (this.has(task.id)) {
+          task?.destroy();
+          tasks.delete(task.id);
+        }
+      }
+      all() {
+        return tasks;
+      }
+      has(taskId) {
+        return tasks.has(taskId);
+      }
+      killAll() {
+        tasks.forEach((id) => this.remove(id));
+      }
+    };
+    exports.TaskRegistry = TaskRegistry;
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/pattern/validation/pattern-validation.js
+var require_pattern_validation = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/pattern/validation/pattern-validation.js"(exports) {
+    "use strict";
+    var __importDefault = exports && exports.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports, "__esModule", { value: true });
+    var index_1 = __importDefault(require_convertion());
+    var validationRegex = /^(?:\d+|\*|\*\/\d+)$/;
+    function isValidExpression(expression, min, max) {
+      const options = expression;
+      for (const option of options) {
+        const optionAsInt = parseInt(option, 10);
+        if (!Number.isNaN(optionAsInt) && (optionAsInt < min || optionAsInt > max) || !validationRegex.test(option))
+          return false;
+      }
+      return true;
+    }
+    function isInvalidSecond(expression) {
+      return !isValidExpression(expression, 0, 59);
+    }
+    function isInvalidMinute(expression) {
+      return !isValidExpression(expression, 0, 59);
+    }
+    function isInvalidHour(expression) {
+      return !isValidExpression(expression, 0, 23);
+    }
+    function isInvalidDayOfMonth(expression) {
+      return !isValidExpression(expression, 1, 31);
+    }
+    function isInvalidMonth(expression) {
+      return !isValidExpression(expression, 1, 12);
+    }
+    function isInvalidWeekDay(expression) {
+      return !isValidExpression(expression, 0, 7);
+    }
+    function validateFields(patterns, executablePatterns) {
+      if (isInvalidSecond(executablePatterns[0]))
+        throw new Error(`${patterns[0]} is a invalid expression for second`);
+      if (isInvalidMinute(executablePatterns[1]))
+        throw new Error(`${patterns[1]} is a invalid expression for minute`);
+      if (isInvalidHour(executablePatterns[2]))
+        throw new Error(`${patterns[2]} is a invalid expression for hour`);
+      if (isInvalidDayOfMonth(executablePatterns[3]))
+        throw new Error(`${patterns[3]} is a invalid expression for day of month`);
+      if (isInvalidMonth(executablePatterns[4]))
+        throw new Error(`${patterns[4]} is a invalid expression for month`);
+      if (isInvalidWeekDay(executablePatterns[5]))
+        throw new Error(`${patterns[5]} is a invalid expression for week day`);
+    }
+    function validate(pattern) {
+      if (typeof pattern !== "string")
+        throw new TypeError("pattern must be a string!");
+      const patterns = pattern.split(" ");
+      const executablePatterns = (0, index_1.default)(pattern);
+      if (patterns.length === 5)
+        patterns.unshift("0");
+      validateFields(patterns, executablePatterns);
+    }
+    exports.default = validate;
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/tasks/background-scheduled-task/background-scheduled-task.js
+var require_background_scheduled_task = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/tasks/background-scheduled-task/background-scheduled-task.js"(exports) {
+    "use strict";
+    var __importDefault = exports && exports.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports, "__esModule", { value: true });
+    var path_1 = __require("path");
+    var child_process_1 = __require("child_process");
+    var create_id_1 = require_create_id();
+    var stream_1 = __require("stream");
+    var state_machine_1 = require_state_machine();
+    var localized_time_1 = require_localized_time();
+    var logger_1 = __importDefault(require_logger2());
+    var time_matcher_1 = require_time_matcher();
+    var daemonPath = (0, path_1.resolve)(__dirname, "daemon.js");
+    var TaskEmitter = class extends stream_1.EventEmitter {
+    };
+    var BackgroundScheduledTask = class {
+      emitter;
+      id;
+      name;
+      cronExpression;
+      taskPath;
+      options;
+      forkProcess;
+      stateMachine;
+      constructor(cronExpression, taskPath, options) {
+        this.cronExpression = cronExpression;
+        this.taskPath = taskPath;
+        this.options = options;
+        this.id = (0, create_id_1.createID)("task");
+        this.name = options?.name || this.id;
+        this.emitter = new TaskEmitter();
+        this.stateMachine = new state_machine_1.StateMachine("stopped");
+        this.on("task:stopped", () => {
+          this.forkProcess?.kill();
+          this.forkProcess = void 0;
+          this.stateMachine.changeState("stopped");
+        });
+        this.on("task:destroyed", () => {
+          this.forkProcess?.kill();
+          this.forkProcess = void 0;
+          this.stateMachine.changeState("destroyed");
+        });
+      }
+      getNextRun() {
+        if (this.stateMachine.state !== "stopped") {
+          const timeMatcher = new time_matcher_1.TimeMatcher(this.cronExpression, this.options?.timezone);
+          return timeMatcher.getNextMatch(/* @__PURE__ */ new Date());
+        }
+        return null;
+      }
+      start() {
+        return new Promise((resolve, reject) => {
+          if (this.forkProcess) {
+            return resolve(void 0);
+          }
+          const timeout = setTimeout(() => {
+            reject(new Error("Start operation timed out"));
+          }, 5e3);
+          try {
+            this.forkProcess = (0, child_process_1.fork)(daemonPath);
+            this.forkProcess.on("error", (err) => {
+              clearTimeout(timeout);
+              reject(new Error(`Error on daemon: ${err.message}`));
+            });
+            this.forkProcess.on("exit", (code, signal) => {
+              if (code !== 0 && signal !== "SIGTERM") {
+                const erro = new Error(`node-cron daemon exited with code ${code || signal}`);
+                logger_1.default.error(erro);
+                clearTimeout(timeout);
+                reject(erro);
+              }
+            });
+            this.forkProcess.on("message", (message2) => {
+              if (message2.jsonError) {
+                if (message2.context?.execution) {
+                  message2.context.execution.error = deserializeError(message2.jsonError);
+                  delete message2.jsonError;
+                }
+              }
+              if (message2.context?.task?.state) {
+                this.stateMachine.changeState(message2.context?.task?.state);
+              }
+              if (message2.context) {
+                const execution = message2.context?.execution;
+                delete execution?.hasError;
+                const context = this.createContext(new Date(message2.context.date), execution);
+                this.emitter.emit(message2.event, context);
+              }
+            });
+            this.once("task:started", () => {
+              this.stateMachine.changeState("idle");
+              clearTimeout(timeout);
+              resolve(void 0);
+            });
+            this.forkProcess.send({
+              command: "task:start",
+              path: this.taskPath,
+              cron: this.cronExpression,
+              options: this.options
+            });
+          } catch (error) {
+            reject(error);
+          }
+        });
+      }
+      stop() {
+        return new Promise((resolve, reject) => {
+          if (!this.forkProcess) {
+            return resolve(void 0);
+          }
+          const timeoutId = setTimeout(() => {
+            clearTimeout(timeoutId);
+            reject(new Error("Stop operation timed out"));
+          }, 5e3);
+          const cleanupAndResolve = () => {
+            clearTimeout(timeoutId);
+            this.off("task:stopped", onStopped);
+            this.forkProcess = void 0;
+            resolve(void 0);
+          };
+          const onStopped = () => {
+            cleanupAndResolve();
+          };
+          this.once("task:stopped", onStopped);
+          this.forkProcess.send({
+            command: "task:stop"
+          });
+        });
+      }
+      getStatus() {
+        return this.stateMachine.state;
+      }
+      destroy() {
+        return new Promise((resolve, reject) => {
+          if (!this.forkProcess) {
+            return resolve(void 0);
+          }
+          const timeoutId = setTimeout(() => {
+            clearTimeout(timeoutId);
+            reject(new Error("Destroy operation timed out"));
+          }, 5e3);
+          const onDestroy = () => {
+            clearTimeout(timeoutId);
+            this.off("task:destroyed", onDestroy);
+            resolve(void 0);
+          };
+          this.once("task:destroyed", onDestroy);
+          this.forkProcess.send({
+            command: "task:destroy"
+          });
+        });
+      }
+      execute() {
+        return new Promise((resolve, reject) => {
+          if (!this.forkProcess) {
+            return reject(new Error("Cannot execute background task because it hasn't been started yet. Please initialize the task using the start() method before attempting to execute it."));
+          }
+          const timeoutId = setTimeout(() => {
+            cleanupListeners();
+            reject(new Error("Execution timeout exceeded"));
+          }, 5e3);
+          const cleanupListeners = () => {
+            clearTimeout(timeoutId);
+            this.off("execution:finished", onFinished);
+            this.off("execution:failed", onFail);
+          };
+          const onFinished = (context) => {
+            cleanupListeners();
+            resolve(context.execution?.result);
+          };
+          const onFail = (context) => {
+            cleanupListeners();
+            reject(context.execution?.error || new Error("Execution failed without specific error"));
+          };
+          this.once("execution:finished", onFinished);
+          this.once("execution:failed", onFail);
+          this.forkProcess.send({
+            command: "task:execute"
+          });
+        });
+      }
+      on(event, fun) {
+        this.emitter.on(event, fun);
+      }
+      off(event, fun) {
+        this.emitter.off(event, fun);
+      }
+      once(event, fun) {
+        this.emitter.once(event, fun);
+      }
+      createContext(executionDate, execution) {
+        const localTime = new localized_time_1.LocalizedTime(executionDate, this.options?.timezone);
+        const ctx = {
+          date: localTime.toDate(),
+          dateLocalIso: localTime.toISO(),
+          triggeredAt: /* @__PURE__ */ new Date(),
+          task: this,
+          execution
+        };
+        return ctx;
+      }
+    };
+    function deserializeError(str) {
+      const data = JSON.parse(str);
+      const Err = globalThis[data.name] || Error;
+      const err = new Err(data.message);
+      if (data.stack) {
+        err.stack = data.stack;
+      }
+      Object.keys(data).forEach((key) => {
+        if (!["name", "message", "stack"].includes(key)) {
+          err[key] = data[key];
+        }
+      });
+      return err;
+    }
+    exports.default = BackgroundScheduledTask;
+  }
+});
+
+// ../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/node-cron.js
+var require_node_cron = __commonJS({
+  "../../node_modules/.pnpm/node-cron@4.2.1/node_modules/node-cron/dist/esm/node-cron.js"(exports) {
+    "use strict";
+    var __importDefault = exports && exports.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.nodeCron = exports.getTask = exports.getTasks = void 0;
+    exports.schedule = schedule2;
+    exports.createTask = createTask;
+    exports.solvePath = solvePath;
+    exports.validate = validate;
+    var inline_scheduled_task_1 = require_inline_scheduled_task();
+    var task_registry_1 = require_task_registry();
+    var pattern_validation_1 = __importDefault(require_pattern_validation());
+    var background_scheduled_task_1 = __importDefault(require_background_scheduled_task());
+    var path_1 = __importDefault(__require("path"));
+    var url_1 = __require("url");
+    var registry = new task_registry_1.TaskRegistry();
+    function schedule2(expression, func, options) {
+      const task = createTask(expression, func, options);
+      task.start();
+      return task;
+    }
+    function createTask(expression, func, options) {
+      let task;
+      if (func instanceof Function) {
+        task = new inline_scheduled_task_1.InlineScheduledTask(expression, func, options);
+      } else {
+        const taskPath = solvePath(func);
+        task = new background_scheduled_task_1.default(expression, taskPath, options);
+      }
+      registry.add(task);
+      return task;
+    }
+    function solvePath(filePath) {
+      if (path_1.default.isAbsolute(filePath))
+        return (0, url_1.pathToFileURL)(filePath).href;
+      if (filePath.startsWith("file://"))
+        return filePath;
+      const stackLines = new Error().stack?.split("\n");
+      if (stackLines) {
+        stackLines?.shift();
+        const callerLine = stackLines?.find((line) => {
+          return line.indexOf(__filename) === -1;
+        });
+        const match = callerLine?.match(/(file:\/\/)?(((\/?)(\w:))?([/\\].+)):\d+:\d+/);
+        if (match) {
+          const dir = `${match[5] ?? ""}${path_1.default.dirname(match[6])}`;
+          return (0, url_1.pathToFileURL)(path_1.default.resolve(dir, filePath)).href;
+        }
+      }
+      throw new Error(`Could not locate task file ${filePath}`);
+    }
+    function validate(expression) {
+      try {
+        (0, pattern_validation_1.default)(expression);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+    exports.getTasks = registry.all;
+    exports.getTask = registry.get;
+    exports.nodeCron = {
+      schedule: schedule2,
+      createTask,
+      validate,
+      getTasks: exports.getTasks,
+      getTask: exports.getTask
+    };
+    exports.default = exports.nodeCron;
+  }
+});
+
 // src/app.ts
 var import_express3 = __toESM(require_express2(), 1);
 var import_cors = __toESM(require_lib3(), 1);
@@ -41581,6 +42925,7 @@ async function connectDB() {
 // src/bot/bot.ts
 var import_telegraf = __toESM(require_lib6(), 1);
 var import_filters = __toESM(require_filters2(), 1);
+var import_node_cron = __toESM(require_node_cron(), 1);
 
 // src/bot/models/user.ts
 import mongoose2 from "mongoose";
@@ -41618,7 +42963,8 @@ var userSchema = new mongoose2.Schema(
     noResponseStrikeWindowStart: { type: Date, default: null },
     tiktokUsernameLocked: { type: Boolean, default: false },
     tiktokLockedAt: { type: Date, default: null },
-    usernameConflictReset: { type: Boolean, default: false }
+    usernameConflictReset: { type: Boolean, default: false },
+    lastResetNotifiedAt: { type: Date, default: null }
   },
   { timestamps: true }
 );
@@ -41792,22 +43138,51 @@ async function checkAndApplyDailyReset(bot, telegramId) {
   if (!user || user.tiktokUsername === "__pending__") return;
   const now = /* @__PURE__ */ new Date();
   const lastReset = user.lastDailyReset;
-  const resetDue = !lastReset || now.getTime() - lastReset.getTime() >= COOLDOWN_MS;
-  if (!resetDue) return;
-  const prevBalance = user.cutBalance;
-  await User.updateOne({ telegramId }, { lastDailyReset: now, cutBalance: DAILY_CUT_FLOOR });
-  console.log(`[DAILY_CUT_RESET] telegramId=${telegramId} (@${user.tiktokUsername}) reset from ${prevBalance} \u2192 ${DAILY_CUT_FLOOR} cuts.`);
-  try {
-    await bot.telegram.sendMessage(
-      telegramId,
-      `\u{1F381} Fresh cuts are here!
+  const fallbackDue = !lastReset || now.getTime() - lastReset.getTime() >= COOLDOWN_MS;
+  if (fallbackDue) {
+    const prevBalance = user.cutBalance;
+    await User.updateOne({ telegramId }, { lastDailyReset: now, cutBalance: DAILY_CUT_FLOOR, lastResetNotifiedAt: now });
+    console.log(`[DAILY_CUT_RESET] telegramId=${telegramId} (@${user.tiktokUsername}) fallback reset from ${prevBalance} \u2192 ${DAILY_CUT_FLOOR} cuts.`);
+    try {
+      await bot.telegram.sendMessage(
+        telegramId,
+        `\u{1F381} Daily cuts refreshed!
 
-Your daily cut balance has been reset to 7 \u2728
-
-Go find your next swap buddy now \u{1F91D}`
-    );
-  } catch {
+You now have 7 fresh cuts ready for today \u{1F91D}\u2728`
+      );
+    } catch {
+    }
+    return;
   }
+  const lastNotified = user.lastResetNotifiedAt;
+  if (lastReset && (!lastNotified || lastNotified < lastReset)) {
+    await User.updateOne({ telegramId }, { lastResetNotifiedAt: now });
+    try {
+      await bot.telegram.sendMessage(
+        telegramId,
+        `\u{1F381} Daily cuts refreshed!
+
+You now have 7 fresh cuts ready for today \u{1F91D}\u2728`
+      );
+    } catch {
+    }
+  }
+}
+function scheduleDailyMidnightReset(bot) {
+  (0, import_node_cron.schedule)("0 0 * * *", async () => {
+    const now = /* @__PURE__ */ new Date();
+    console.log(`[DAILY_MIDNIGHT_CUT_RESET_MYT] Midnight reset triggered at ${now.toISOString()} (00:00 MYT / Asia/Kuala_Lumpur).`);
+    try {
+      const result = await User.updateMany(
+        { tiktokUsername: { $nin: ["__pending__", ""] }, isBanned: false },
+        { $set: { cutBalance: DAILY_CUT_FLOOR, lastDailyReset: now } }
+      );
+      console.log(`[DAILY_CUT_RESET_SUCCESS] Reset cutBalance to ${DAILY_CUT_FLOOR} for ${result.modifiedCount} user(s).`);
+    } catch (err) {
+      console.error(`[DAILY_CUT_RESET_FAILED] Error during midnight reset: ${err.message}`);
+    }
+  }, { timezone: "Asia/Kuala_Lumpur" });
+  console.log("[DAILY_MIDNIGHT_CUT_RESET_MYT] Scheduler registered: daily cut reset at 00:00 Asia/Kuala_Lumpur (MYT).");
 }
 async function notifyQueueUsers(bot, newUserTikTok, newUserTelegramId) {
   const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1e3);
@@ -43384,6 +44759,7 @@ async function main() {
   await cleanupStaleQueue();
   console.log("[STARTUP] Stale queue cleanup complete.");
   const bot = createBot();
+  scheduleDailyMidnightReset(bot);
   console.log("Clearing any existing Telegram webhook...");
   await bot.telegram.deleteWebhook({ drop_pending_updates: false });
   console.log("Webhook cleared. Starting polling...");

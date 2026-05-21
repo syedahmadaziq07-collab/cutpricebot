@@ -34,6 +34,7 @@ export interface IUser extends Document {
   tiktokUsernameLocked: boolean;
   tiktokLockedAt: Date | null;
   usernameConflictReset: boolean;
+  lastResetNotifiedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -73,6 +74,7 @@ const userSchema = new mongoose.Schema<IUser>(
     tiktokUsernameLocked: { type: Boolean, default: false },
     tiktokLockedAt: { type: Date, default: null },
     usernameConflictReset: { type: Boolean, default: false },
+    lastResetNotifiedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

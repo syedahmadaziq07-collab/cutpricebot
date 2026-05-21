@@ -1,5 +1,6 @@
 import { Telegraf, Markup } from "telegraf";
 import { message } from "telegraf/filters";
+import { schedule } from "node-cron";
 import { User } from "./models/user";
 import { Match } from "./models/match";
 import { MatchHistory } from "./models/matchHistory";
@@ -139,22 +140,52 @@ async function checkAndApplyDailyReset(bot: Telegraf, telegramId: number): Promi
 
   const now = new Date();
   const lastReset = user.lastDailyReset;
-  const resetDue = !lastReset || now.getTime() - lastReset.getTime() >= COOLDOWN_MS;
 
-  if (!resetDue) return;
-
-  // Always reset to DAILY_CUT_FLOOR regardless of current balance
-  const prevBalance = user.cutBalance;
-  await User.updateOne({ telegramId }, { lastDailyReset: now, cutBalance: DAILY_CUT_FLOOR });
-  console.log(`[DAILY_CUT_RESET] telegramId=${telegramId} (@${user.tiktokUsername}) reset from ${prevBalance} → ${DAILY_CUT_FLOOR} cuts.`);
-  try {
-    await bot.telegram.sendMessage(
-      telegramId,
-      `🎁 Fresh cuts are here!\n\nYour daily cut balance has been reset to 7 ✨\n\nGo find your next swap buddy now 🤝`,
-    );
-  } catch {
-    // user may have blocked the bot
+  // Fallback: if scheduler missed (server was down at midnight), reset this user now
+  const fallbackDue = !lastReset || now.getTime() - lastReset.getTime() >= COOLDOWN_MS;
+  if (fallbackDue) {
+    const prevBalance = user.cutBalance;
+    await User.updateOne({ telegramId }, { lastDailyReset: now, cutBalance: DAILY_CUT_FLOOR, lastResetNotifiedAt: now });
+    console.log(`[DAILY_CUT_RESET] telegramId=${telegramId} (@${user.tiktokUsername}) fallback reset from ${prevBalance} → ${DAILY_CUT_FLOOR} cuts.`);
+    try {
+      await bot.telegram.sendMessage(
+        telegramId,
+        `🎁 Daily cuts refreshed!\n\nYou now have 7 fresh cuts ready for today 🤝✨`,
+      );
+    } catch { /* user may have blocked the bot */ }
+    return;
   }
+
+  // Scheduler ran — notify user if they haven't been notified since the last reset
+  const lastNotified = user.lastResetNotifiedAt;
+  if (lastReset && (!lastNotified || lastNotified < lastReset)) {
+    await User.updateOne({ telegramId }, { lastResetNotifiedAt: now });
+    try {
+      await bot.telegram.sendMessage(
+        telegramId,
+        `🎁 Daily cuts refreshed!\n\nYou now have 7 fresh cuts ready for today 🤝✨`,
+      );
+    } catch { /* user may have blocked the bot */ }
+  }
+}
+
+export function scheduleDailyMidnightReset(bot: Telegraf): void {
+  // Runs at 00:00 every day, Asia/Kuala_Lumpur (MYT = UTC+8)
+  schedule("0 0 * * *", async () => {
+    const now = new Date();
+    console.log(`[DAILY_MIDNIGHT_CUT_RESET_MYT] Midnight reset triggered at ${now.toISOString()} (00:00 MYT / Asia/Kuala_Lumpur).`);
+    try {
+      const result = await User.updateMany(
+        { tiktokUsername: { $nin: ["__pending__", ""] }, isBanned: false },
+        { $set: { cutBalance: DAILY_CUT_FLOOR, lastDailyReset: now } },
+      );
+      console.log(`[DAILY_CUT_RESET_SUCCESS] Reset cutBalance to ${DAILY_CUT_FLOOR} for ${result.modifiedCount} user(s).`);
+    } catch (err) {
+      console.error(`[DAILY_CUT_RESET_FAILED] Error during midnight reset: ${(err as Error).message}`);
+    }
+  }, { timezone: "Asia/Kuala_Lumpur" });
+
+  console.log("[DAILY_MIDNIGHT_CUT_RESET_MYT] Scheduler registered: daily cut reset at 00:00 Asia/Kuala_Lumpur (MYT).");
 }
 
 async function notifyQueueUsers(
