@@ -18,6 +18,10 @@ export interface IUser extends Document {
   pendingLink: string | null;
   lastNotifiedAt: Date | null;
   queuedAt: Date | null;
+  lastDailyReset: Date | null;
+  dailyReferralCutsToday: number;
+  dailyReferralResetAt: Date | null;
+  firstSwapCompleted: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -30,7 +34,7 @@ const userSchema = new mongoose.Schema<IUser>(
     tiktokProfileLink: { type: String, default: "" },
     referralCode: { type: String, required: true, unique: true },
     referredBy: { type: String, default: null },
-    cutBalance: { type: Number, default: 16 },
+    cutBalance: { type: Number, default: 7 },
     strikes: { type: Number, default: 0 },
     suspendedUntil: { type: Date, default: null },
     isBanned: { type: Boolean, default: false },
@@ -41,6 +45,10 @@ const userSchema = new mongoose.Schema<IUser>(
     pendingLink: { type: String, default: null },
     lastNotifiedAt: { type: Date, default: null },
     queuedAt: { type: Date, default: null },
+    lastDailyReset: { type: Date, default: null },
+    dailyReferralCutsToday: { type: Number, default: 0 },
+    dailyReferralResetAt: { type: Date, default: null },
+    firstSwapCompleted: { type: Boolean, default: false },
   },
   { timestamps: true },
 );

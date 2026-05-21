@@ -6,6 +6,11 @@ import { MatchHistory } from "./models/matchHistory";
 import { Referral } from "./models/referral";
 import { logger } from "../lib/logger";
 
+const DAILY_CUT_FLOOR = 7;
+const REFERRAL_CUT_REWARD = 4;
+const DAILY_REFERRAL_CAP = 20;
+const COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
 const matchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function generateReferralCode(): string {
@@ -14,21 +19,43 @@ function generateReferralCode(): string {
 
 function extractTikTokUsername(input: string): string | null {
   const trimmed = input.trim();
-
   if (trimmed.startsWith("@")) return trimmed.slice(1);
-
   const match = trimmed.match(
     /(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@([a-zA-Z0-9._]+)/i,
   );
   if (match && match[1]) return match[1];
-
   return null;
 }
 
 function isValidTikTokLink(url: string): boolean {
-  return /(?:https?:\/\/)?(?:www\.)?(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\//i.test(
-    url,
-  );
+  return /(?:https?:\/\/)?(?:www\.)?(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\//i.test(url);
+}
+
+async function checkAndApplyDailyReset(bot: Telegraf, telegramId: number): Promise<void> {
+  const user = await User.findOne({ telegramId });
+  if (!user || user.tiktokUsername === "__pending__") return;
+
+  const now = new Date();
+  const lastReset = user.lastDailyReset;
+  const resetDue = !lastReset || now.getTime() - lastReset.getTime() >= COOLDOWN_MS;
+
+  if (!resetDue) return;
+
+  await User.updateOne({ telegramId }, { lastDailyReset: now });
+
+  if (user.cutBalance < DAILY_CUT_FLOOR) {
+    await User.updateOne({ telegramId }, { cutBalance: DAILY_CUT_FLOOR });
+    console.log(`[DAILY_CUT_RESET] telegramId=${telegramId} (@${user.tiktokUsername}) reset from ${user.cutBalance} → ${DAILY_CUT_FLOOR} cuts.`);
+    try {
+      await bot.telegram.sendMessage(
+        telegramId,
+        `🎁 *Cut harian anda telah direset!*\n\nAnda kini mempunyai ${DAILY_CUT_FLOOR} cut untuk digunakan hari ini 🤝`,
+        { parse_mode: "Markdown" },
+      );
+    } catch {
+      // user may have blocked the bot
+    }
+  }
 }
 
 async function notifyQueueUsers(
@@ -37,44 +64,24 @@ async function notifyQueueUsers(
   newUserTelegramId: number,
 ): Promise<void> {
   const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-
   const now = new Date();
   const eligibleUsers = await User.find({
     telegramId: { $ne: newUserTelegramId },
     tiktokUsername: { $nin: ["__pending__", ""] },
     isBanned: false,
     $and: [
-      {
-        $or: [
-          { suspendedUntil: null },
-          { suspendedUntil: { $lte: now } },
-        ],
-      },
-      {
-        $or: [
-          { cancelCooldownUntil: null },
-          { cancelCooldownUntil: { $lte: now } },
-        ],
-      },
-      {
-        $or: [
-          { lastNotifiedAt: null },
-          { lastNotifiedAt: { $lte: tenMinutesAgo } },
-        ],
-      },
+      { $or: [{ suspendedUntil: null }, { suspendedUntil: { $lte: now } }] },
+      { $or: [{ cancelCooldownUntil: null }, { cancelCooldownUntil: { $lte: now } }] },
+      { $or: [{ lastNotifiedAt: null }, { lastNotifiedAt: { $lte: tenMinutesAgo } }] },
     ],
   });
 
-  console.log(
-    `[QUEUE] @${newUserTikTok} joined queue. Notifying ${eligibleUsers.length} eligible user(s).`,
-  );
-
+  console.log(`[QUEUE] @${newUserTikTok} joined queue. Notifying ${eligibleUsers.length} eligible user(s).`);
   if (eligibleUsers.length === 0) {
     console.log(`[QUEUE] Queue empty — no eligible users to notify for @${newUserTikTok}.`);
   }
 
   let sentCount = 0;
-
   for (const u of eligibleUsers) {
     try {
       await bot.telegram.sendMessage(
@@ -82,42 +89,23 @@ async function notifyQueueUsers(
         `🔔 *Pengguna baru sedang mencari partner cut!*\n\nUsername TikTok:\n@${newUserTikTok}\n\nBuka bot sekarang untuk mula swap cut price link 🤝`,
         { parse_mode: "Markdown" },
       );
-      await User.updateOne(
-        { telegramId: u.telegramId },
-        { lastNotifiedAt: new Date() },
-      );
+      await User.updateOne({ telegramId: u.telegramId }, { lastNotifiedAt: new Date() });
       sentCount++;
       console.log(`[NOTIFY] Sent notification to telegramId=${u.telegramId} (@${u.tiktokUsername})`);
     } catch (err) {
-      console.error(
-        `[NOTIFY] Failed to notify telegramId=${u.telegramId}: ${(err as Error).message}`,
-      );
+      console.error(`[NOTIFY] Failed to notify telegramId=${u.telegramId}: ${(err as Error).message}`);
     }
   }
-
-  console.log(
-    `[NOTIFY] Notifications sent: ${sentCount}/${eligibleUsers.length}`,
-  );
+  console.log(`[NOTIFY] Notifications sent: ${sentCount}/${eligibleUsers.length}`);
 }
 
-async function checkSuspension(
-  telegramId: number,
-): Promise<{ suspended: boolean; message: string }> {
+async function checkSuspension(telegramId: number): Promise<{ suspended: boolean; message: string }> {
   const user = await User.findOne({ telegramId });
   if (!user) return { suspended: false, message: "" };
-  if (user.isBanned)
-    return {
-      suspended: true,
-      message: "🚫 Kau dah kena permanent ban. Game over bro.",
-    };
+  if (user.isBanned) return { suspended: true, message: "🚫 Kau dah kena permanent ban. Game over bro." };
   if (user.suspendedUntil && user.suspendedUntil > new Date()) {
-    const remaining = Math.ceil(
-      (user.suspendedUntil.getTime() - Date.now()) / (1000 * 60 * 60),
-    );
-    return {
-      suspended: true,
-      message: `⏳ Kau still kena suspend. Tunggu lagi ${remaining} jam k.`,
-    };
+    const remaining = Math.ceil((user.suspendedUntil.getTime() - Date.now()) / (1000 * 60 * 60));
+    return { suspended: true, message: `⏳ Kau still kena suspend. Tunggu lagi ${remaining} jam k.` };
   }
   return { suspended: false, message: "" };
 }
@@ -125,39 +113,22 @@ async function checkSuspension(
 async function issueStrike(bot: Telegraf, telegramId: number): Promise<void> {
   const user = await User.findOne({ telegramId });
   if (!user) return;
-
   const newStrikes = user.strikes + 1;
-
   if (newStrikes >= 3) {
-    await User.updateOne(
-      { telegramId },
-      { strikes: newStrikes, isBanned: true, state: "idle", pendingLink: null },
-    );
+    await User.updateOne({ telegramId }, { strikes: newStrikes, isBanned: true, state: "idle", pendingLink: null });
     await bot.telegram.sendMessage(
       telegramId,
       "🚫 Strike 3! Kau dah kena *permanent ban*.\nPunca: screenshot tak valid / proof tak cukup.\n\nTa-ta! 👋",
       { parse_mode: "Markdown" },
     );
   } else {
-    const suspendedUntil = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    await User.updateOne(
-      { telegramId },
-      {
-        strikes: newStrikes,
-        suspendedUntil,
-        state: "idle",
-        pendingLink: null,
-      },
-    );
+    const suspendedUntil = new Date(Date.now() + COOLDOWN_MS);
+    await User.updateOne({ telegramId }, { strikes: newStrikes, suspendedUntil, state: "idle", pendingLink: null });
     const msgs = [
       `⚠️ Strike ${newStrikes}/3!\nScreenshot tak valid. Kau kena *suspend 24 jam*.\n\nJangan repeat k! 😤`,
       `⚠️ Strike ${newStrikes}/3!\nProof tak lepas semak. 24 jam suspend dimulakan.\n\nLast warning ni! 😡`,
     ];
-    await bot.telegram.sendMessage(
-      telegramId,
-      msgs[newStrikes - 1] || msgs[0]!,
-      { parse_mode: "Markdown" },
-    );
+    await bot.telegram.sendMessage(telegramId, msgs[newStrikes - 1] || msgs[0]!, { parse_mode: "Markdown" });
   }
 }
 
@@ -171,9 +142,7 @@ async function handleMatchExpiry(
   if (!match || match.status !== "active") return;
 
   await Match.updateOne({ _id: matchId }, { status: "expired" });
-
-  const expireMsg =
-    "⏰ 4 minit dah habis! Partner tak respond.\n\nSubmit link baru untuk rematch k 👇";
+  const expireMsg = "⏰ 4 minit dah habis! Partner tak respond.\n\nSubmit link baru untuk rematch k 👇";
 
   for (const uid of [user1Id, user2Id]) {
     const user = await User.findOne({ telegramId: uid });
@@ -188,19 +157,13 @@ async function handleMatchExpiry(
     console.log(`[WAITING_CLEARED] isWaiting=false, queuedAt=null set for telegramId=${uid} (expiry).`);
     await bot.telegram.sendMessage(uid, expireMsg);
   }
-
   matchTimers.delete(matchId);
 }
-
-const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 async function hasCooldown(userIdA: number, userIdB: number): Promise<boolean> {
   const since = new Date(Date.now() - COOLDOWN_MS);
   const existing = await MatchHistory.findOne({
-    $or: [
-      { userIdA, userIdB },
-      { userIdA: userIdB, userIdB: userIdA },
-    ],
+    $or: [{ userIdA, userIdB }, { userIdA: userIdB, userIdB: userIdA }],
     matchedAt: { $gte: since },
   });
   return existing !== null;
@@ -218,9 +181,7 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
   }).sort({ queuedAt: 1 });
 
   if (candidates.length === 0) {
-    console.log(
-      `[MATCH] No candidates in queue for @${currentUser.tiktokUsername} (telegramId=${telegramId}).`,
-    );
+    console.log(`[MATCH] No candidates in queue for @${currentUser.tiktokUsername} (telegramId=${telegramId}).`);
     return;
   }
 
@@ -228,9 +189,7 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
   for (const candidate of candidates) {
     const onCooldown = await hasCooldown(telegramId, candidate.telegramId);
     if (onCooldown) {
-      console.log(
-        `[COOLDOWN] Pair skipped — @${currentUser.tiktokUsername} & @${candidate.tiktokUsername} matched within last 24h. Cooldown active.`,
-      );
+      console.log(`[COOLDOWN] Pair skipped — @${currentUser.tiktokUsername} & @${candidate.tiktokUsername} matched within last 24h. Cooldown active.`);
       continue;
     }
     partner = candidate;
@@ -238,15 +197,11 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
   }
 
   if (!partner) {
-    console.log(
-      `[MATCH] No eligible partner for @${currentUser.tiktokUsername} — all candidates on 24h cooldown.`,
-    );
+    console.log(`[MATCH] No eligible partner for @${currentUser.tiktokUsername} — all candidates on 24h cooldown.`);
     return;
   }
 
-  console.log(
-    `[MATCH] Match created: @${currentUser.tiktokUsername} (telegramId=${telegramId}) <-> @${partner.tiktokUsername} (telegramId=${partner.telegramId})`,
-  );
+  console.log(`[MATCH] Match created: @${currentUser.tiktokUsername} (telegramId=${telegramId}) <-> @${partner.tiktokUsername} (telegramId=${partner.telegramId})`);
 
   const now = new Date();
   const expiresAt = new Date(Date.now() + 4 * 60 * 1000);
@@ -259,22 +214,12 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
       link2: partner.pendingLink ?? "",
       expiresAt,
     }),
-    MatchHistory.create({
-      userIdA: telegramId,
-      userIdB: partner.telegramId,
-      matchedAt: now,
-    }),
+    MatchHistory.create({ userIdA: telegramId, userIdB: partner.telegramId, matchedAt: now }),
   ]);
 
   await Promise.all([
-    User.updateOne(
-      { telegramId },
-      { state: "in_match", lastMatchPartnerId: partner.telegramId, isWaiting: false, queuedAt: null },
-    ),
-    User.updateOne(
-      { telegramId: partner.telegramId },
-      { state: "in_match", lastMatchPartnerId: telegramId, isWaiting: false, queuedAt: null },
-    ),
+    User.updateOne({ telegramId }, { state: "in_match", lastMatchPartnerId: partner.telegramId, isWaiting: false, queuedAt: null }),
+    User.updateOne({ telegramId: partner.telegramId }, { state: "in_match", lastMatchPartnerId: telegramId, isWaiting: false, queuedAt: null }),
   ]);
 
   console.log(`[QUEUE_REMOVE] telegramId=${telegramId} (@${currentUser.tiktokUsername}) removed from queue.`);
@@ -284,7 +229,6 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
   console.log(`[MATCH_SUCCESS] @${currentUser.tiktokUsername} <-> @${partner.tiktokUsername} matched successfully.`);
 
   const matchId = (match._id as { toString(): string }).toString();
-
   const matchButtons = Markup.inlineKeyboard([
     Markup.button.callback("✅ Done Cut", "done_cut"),
     Markup.button.callback("❌ Cancel Match (24h cooldown)", "cancel_match"),
@@ -310,20 +254,68 @@ async function tryMatch(bot: Telegraf, telegramId: number): Promise<void> {
   const timer = setTimeout(async () => {
     await handleMatchExpiry(bot, matchId, telegramId, partner!.telegramId);
   }, 4 * 60 * 1000);
-
   matchTimers.set(matchId, timer);
 }
 
-async function checkAndCompleteMatch(
-  bot: Telegraf,
-  matchId: string,
-): Promise<void> {
+async function grantReferralReward(bot: Telegraf, referredUserId: number): Promise<void> {
+  const referral = await Referral.findOne({ referredId: referredUserId, rewardGranted: false });
+  if (!referral) return;
+
+  const referrer = await User.findOne({ telegramId: referral.referrerId });
+  if (!referrer) {
+    console.log(`[REFERRAL_REJECTED] Referrer telegramId=${referral.referrerId} not found for referredId=${referredUserId}.`);
+    return;
+  }
+
+  const now = new Date();
+
+  const dailyWindowExpired = !referrer.dailyReferralResetAt ||
+    now.getTime() - referrer.dailyReferralResetAt.getTime() >= COOLDOWN_MS;
+
+  let cutsToday = referrer.dailyReferralCutsToday;
+  let resetAt = referrer.dailyReferralResetAt;
+
+  if (dailyWindowExpired) {
+    cutsToday = 0;
+    resetAt = now;
+  }
+
+  if (cutsToday + REFERRAL_CUT_REWARD > DAILY_REFERRAL_CAP) {
+    console.log(`[REFERRAL_DAILY_LIMIT_REACHED] telegramId=${referral.referrerId} (@${referrer.tiktokUsername}) has reached daily referral cap (${cutsToday}/${DAILY_REFERRAL_CAP}). Reward not granted for referredId=${referredUserId}.`);
+    await Referral.updateOne({ _id: referral._id }, { rewardGranted: true, rewardGrantedAt: now });
+    return;
+  }
+
+  const newBalance = referrer.cutBalance + REFERRAL_CUT_REWARD;
+  const newCutsToday = cutsToday + REFERRAL_CUT_REWARD;
+
+  await Promise.all([
+    User.updateOne(
+      { telegramId: referral.referrerId },
+      { cutBalance: newBalance, dailyReferralCutsToday: newCutsToday, dailyReferralResetAt: resetAt },
+    ),
+    Referral.updateOne({ _id: referral._id }, { rewardGranted: true, rewardGrantedAt: now }),
+  ]);
+
+  console.log(`[REFERRAL_REWARD_GRANTED] telegramId=${referral.referrerId} (@${referrer.tiktokUsername}) received +${REFERRAL_CUT_REWARD} cuts for referredId=${referredUserId}. New balance: ${newBalance}. Daily referral cuts today: ${newCutsToday}/${DAILY_REFERRAL_CAP}.`);
+
+  try {
+    await bot.telegram.sendMessage(
+      referral.referrerId,
+      `🎉 Kawan yang kau jemput baru sahaja selesaikan swap pertama mereka!\n\n*+${REFERRAL_CUT_REWARD} cuts* dah masuk balance kau! 🔥\n\nCut baki: *${newBalance}*`,
+      { parse_mode: "Markdown" },
+    );
+  } catch {
+    // user may have blocked the bot
+  }
+}
+
+async function checkAndCompleteMatch(bot: Telegraf, matchId: string): Promise<void> {
   const match = await Match.findById(matchId);
   if (!match || match.status !== "active") return;
 
   const bothSubmitted = match.user1ProofSubmitted && match.user2ProofSubmitted;
   const bothApproved = match.user1ProofApprovedByPartner && match.user2ProofApprovedByPartner;
-
   if (!bothSubmitted || !bothApproved) return;
 
   const timerId = match._id.toString();
@@ -334,7 +326,6 @@ async function checkAndCompleteMatch(
   }
 
   await Match.updateOne({ _id: matchId }, { status: "completed" });
-
   console.log(`[MATCH_COMPLETED] matchId=${matchId} — both proofs submitted and approved.`);
 
   for (const uid of [match.user1Id, match.user2Id]) {
@@ -342,6 +333,8 @@ async function checkAndCompleteMatch(
     if (!user) continue;
 
     const newBalance = Math.max(0, user.cutBalance - 1);
+    const isFirstSwap = !user.firstSwapCompleted;
+
     await User.updateOne(
       { telegramId: uid },
       {
@@ -350,6 +343,7 @@ async function checkAndCompleteMatch(
         pendingLink: null,
         queuedAt: null,
         isWaiting: false,
+        firstSwapCompleted: true,
       },
     );
 
@@ -358,18 +352,22 @@ async function checkAndCompleteMatch(
       const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
       await bot.telegram.sendMessage(
         uid,
-        `🎉 *Swap selesai!*\n\nTerima kasih kerana menggunakan CutSquad 🤝\n\nCut baki: *0/16* 😮\n\nKau dah habis semua cuts!\n\n🔥 Nak lagi? Share bot ni & dapat *+3 cuts* setiap orang yang join!\n\n${refLink}`,
+        `🎉 *Swap selesai!*\n\nTerima kasih kerana menggunakan CutSquad 🤝\n\nCut baki: *0/${DAILY_CUT_FLOOR}* 😮\n\nKau dah habis semua cuts!\n\n🔥 Nak lagi? Share bot ni & dapat *+${REFERRAL_CUT_REWARD} cuts* setiap orang yang join!\n\n${refLink}`,
         { parse_mode: "Markdown" },
       );
     } else {
       await bot.telegram.sendMessage(
         uid,
-        `🎉 *Swap selesai!*\n\nTerima kasih kerana menggunakan CutSquad 🤝\n\nCut baki: *${newBalance}/16*`,
+        `🎉 *Swap selesai!*\n\nTerima kasih kerana menggunakan CutSquad 🤝\n\nCut baki: *${newBalance}*`,
         {
           parse_mode: "Markdown",
           ...Markup.inlineKeyboard([Markup.button.callback("🔁 Cut Lagi!", "cut_more")]),
         },
       );
+    }
+
+    if (isFirstSwap) {
+      await grantReferralReward(bot, uid);
     }
   }
 }
@@ -389,12 +387,9 @@ export function createBot(): Telegraf {
 
     if (existingUser && existingUser.tiktokUsername && existingUser.tiktokUsername !== "__pending__") {
       const sus = await checkSuspension(telegramId);
-      if (sus.suspended) {
-        await ctx.reply(sus.message);
-        return;
-      }
+      if (sus.suspended) { await ctx.reply(sus.message); return; }
       await ctx.reply(
-        `Eh, kau dah register la @${existingUser.tiktokUsername}! 👋\n\nCut baki: *${existingUser.cutBalance}/16*\n\nHantar TikTok cut price link untuk mula! 🔗`,
+        `Eh, kau dah register la @${existingUser.tiktokUsername}! 👋\n\nCut baki: *${existingUser.cutBalance}*\n\nHantar TikTok cut price link untuk mula! 🔗`,
         { parse_mode: "Markdown" },
       );
       await User.updateOne({ telegramId }, { state: "awaiting_cut_link" });
@@ -402,9 +397,7 @@ export function createBot(): Telegraf {
     }
 
     let referralCode: string | null = null;
-    if (payload && payload.startsWith("ref_")) {
-      referralCode = payload.slice(4);
-    }
+    if (payload && payload.startsWith("ref_")) referralCode = payload.slice(4);
 
     await User.findOneAndUpdate(
       { telegramId },
@@ -419,17 +412,10 @@ export function createBot(): Telegraf {
       { upsert: true, new: true },
     );
 
-    if (referralCode) {
-      await ctx.reply(
-        "👋 Weh selamat datang ke *CutSquad*!\n\nBot ni untuk swap TikTok cut price links — kau cut gue, gue cut kau! 🔁\n\nFirst, hantar link profile TikTok kau 👇\n_(contoh: https://www.tiktok.com/@username)_",
-        { parse_mode: "Markdown" },
-      );
-    } else {
-      await ctx.reply(
-        "👋 Weh selamat datang ke *CutSquad*!\n\nBot ni untuk swap TikTok cut price links — kau cut gue, gue cut kau! 🔁\n\nHantar link profile TikTok kau 👇\n_(contoh: https://www.tiktok.com/@username)_",
-        { parse_mode: "Markdown" },
-      );
-    }
+    await ctx.reply(
+      "👋 Weh selamat datang ke *CutSquad*!\n\nBot ni untuk swap TikTok cut price links — kau cut gue, gue cut kau! 🔁\n\nHantar link profile TikTok kau 👇\n_(contoh: https://www.tiktok.com/@username)_",
+      { parse_mode: "Markdown" },
+    );
   });
 
   bot.command("balance", async (ctx) => {
@@ -439,7 +425,7 @@ export function createBot(): Telegraf {
       return;
     }
     await ctx.reply(
-      `💰 *Balance kau:*\n\nCut baki: *${user.cutBalance}/16*\nStrike: ${user.strikes}/3\n\nReferral link kau:\n👇`,
+      `💰 *Balance kau:*\n\nCut baki: *${user.cutBalance}*\nStrike: ${user.strikes}/3\n\nReferral link kau:\n👇`,
       { parse_mode: "Markdown" },
     );
     const me = await bot.telegram.getMe();
@@ -456,7 +442,7 @@ export function createBot(): Telegraf {
     const me = await bot.telegram.getMe();
     const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
     await ctx.reply(
-      `🔥 *Referral link kau:*\n\n${refLink}\n\nShare ni — setiap kawan yang join = *+3 cuts* untuk kau!`,
+      `🔥 *Referral link kau:*\n\n${refLink}\n\nShare ni — setiap kawan yang join & selesaikan swap pertama = *+${REFERRAL_CUT_REWARD} cuts* untuk kau!\n\n_(Had harian: ${DAILY_REFERRAL_CAP} cuts daripada referral)_`,
       { parse_mode: "Markdown" },
     );
   });
@@ -476,7 +462,7 @@ export function createBot(): Telegraf {
       awaiting_partner_approval: "⏳ Menunggu kelulusan partner",
     };
     await ctx.reply(
-      `📊 *Status kau:*\n\nTikTok: @${user.tiktokUsername}\nCut baki: ${user.cutBalance}/16\nStrikes: ${user.strikes}/3\nStatus: ${statusMap[user.state] ?? user.state}`,
+      `📊 *Status kau:*\n\nTikTok: @${user.tiktokUsername}\nCut baki: ${user.cutBalance}\nStrikes: ${user.strikes}/3\nStatus: ${statusMap[user.state] ?? user.state}`,
       { parse_mode: "Markdown" },
     );
   });
@@ -486,10 +472,9 @@ export function createBot(): Telegraf {
     console.log(`[MSG] photo from telegramId=${telegramId}`);
 
     const sus = await checkSuspension(telegramId);
-    if (sus.suspended) {
-      await ctx.reply(sus.message);
-      return;
-    }
+    if (sus.suspended) { await ctx.reply(sus.message); return; }
+
+    await checkAndApplyDailyReset(bot, telegramId);
 
     const user = await User.findOne({ telegramId });
     if (!user || user.tiktokUsername === "__pending__") {
@@ -498,24 +483,17 @@ export function createBot(): Telegraf {
     }
 
     if (user.state === "in_match") {
-      await ctx.reply(
-        "Sila tekan butang *✅ Done Cut* dahulu sebelum menghantar bukti ya.",
-        { parse_mode: "Markdown" },
-      );
+      await ctx.reply("Sila tekan butang *✅ Done Cut* dahulu sebelum menghantar bukti ya.", { parse_mode: "Markdown" });
       return;
     }
 
     if (user.state === "awaiting_partner_approval") {
-      await ctx.reply(
-        "⏳ Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.",
-      );
+      await ctx.reply("⏳ Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.");
       return;
     }
 
     if (user.state !== "awaiting_proof") {
-      await ctx.reply(
-        "Tiada match aktif. Hantar link TikTok anda dahulu untuk mula.",
-      );
+      await ctx.reply("Tiada match aktif. Hantar link TikTok anda dahulu untuk mula.");
       return;
     }
 
@@ -535,9 +513,7 @@ export function createBot(): Telegraf {
 
     const alreadySubmitted = isUser1 ? match.user1ProofSubmitted : match.user2ProofSubmitted;
     if (alreadySubmitted) {
-      await ctx.reply(
-        "⏳ Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.",
-      );
+      await ctx.reply("⏳ Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.");
       return;
     }
 
@@ -553,50 +529,35 @@ export function createBot(): Telegraf {
     const now = new Date();
 
     if (isUser1) {
-      await Match.updateOne(
-        { _id: match._id },
-        {
-          user1ProofSubmitted: true,
-          user1ProofMessageId: proofMessageId,
-          user1ProofSubmittedAt: now,
-          user1Confirmed: true,
-        },
-      );
+      await Match.updateOne({ _id: match._id }, {
+        user1ProofSubmitted: true,
+        user1ProofMessageId: proofMessageId,
+        user1ProofSubmittedAt: now,
+        user1Confirmed: true,
+      });
     } else {
-      await Match.updateOne(
-        { _id: match._id },
-        {
-          user2ProofSubmitted: true,
-          user2ProofMessageId: proofMessageId,
-          user2ProofSubmittedAt: now,
-          user2Confirmed: true,
-        },
-      );
+      await Match.updateOne({ _id: match._id }, {
+        user2ProofSubmitted: true,
+        user2ProofMessageId: proofMessageId,
+        user2ProofSubmittedAt: now,
+        user2Confirmed: true,
+      });
     }
 
     console.log(`[PROOF_SUBMITTED] telegramId=${telegramId} submitted proof for matchId=${matchId}.`);
-
     await User.updateOne({ telegramId }, { state: "awaiting_partner_approval" });
-
-    await ctx.reply(
-      "✅ Bukti anda telah dihantar.\nTunggu partner anda semak dan approve bukti tersebut.",
-    );
+    await ctx.reply("✅ Bukti anda telah dihantar.\nTunggu partner anda semak dan approve bukti tersebut.");
 
     const approveButtons = Markup.inlineKeyboard([
       Markup.button.callback("✅ Approve Proof", `approve_proof:${matchId}:${telegramId}`),
       Markup.button.callback("❌ Reject Proof", `reject_proof:${matchId}:${telegramId}`),
     ]);
 
-    await bot.telegram.sendPhoto(
-      partnerId,
-      proofFileId,
-      {
-        caption:
-          `📸 *Partner anda telah menghantar bukti cut.*\n\nSila semak bukti di bawah sebelum approve.`,
-        parse_mode: "Markdown",
-        ...approveButtons,
-      },
-    );
+    await bot.telegram.sendPhoto(partnerId, proofFileId, {
+      caption: `📸 *Partner anda telah menghantar bukti cut.*\n\nSila semak bukti di bawah sebelum approve.`,
+      parse_mode: "Markdown",
+      ...approveButtons,
+    });
   });
 
   bot.on(message("text"), async (ctx) => {
@@ -607,10 +568,9 @@ export function createBot(): Telegraf {
     if (text.startsWith("/")) return;
 
     const sus = await checkSuspension(telegramId);
-    if (sus.suspended) {
-      await ctx.reply(sus.message);
-      return;
-    }
+    if (sus.suspended) { await ctx.reply(sus.message); return; }
+
+    await checkAndApplyDailyReset(bot, telegramId);
 
     const user = await User.findOne({ telegramId });
 
@@ -620,9 +580,7 @@ export function createBot(): Telegraf {
         const username = extractTikTokUsername(text);
         if (!username) {
           console.warn(`[TIKTOK] Username extraction failed for telegramId=${telegramId}, input="${text.slice(0, 100)}"`);
-          await ctx.reply(
-            "Hmm link tu tak valid la 😕\nHantar betul2 k — contoh:\nhttps://www.tiktok.com/@username",
-          );
+          await ctx.reply("Hmm link tu tak valid la 😕\nHantar betul2 k — contoh:\nhttps://www.tiktok.com/@username");
           return;
         }
 
@@ -631,49 +589,34 @@ export function createBot(): Telegraf {
 
         await User.updateOne(
           { telegramId },
-          {
-            tiktokUsername: username,
-            tiktokProfileLink: text,
-            telegramUsername: ctx.from.username ?? "",
-            state: "awaiting_cut_link",
-          },
+          { tiktokUsername: username, tiktokProfileLink: text, telegramUsername: ctx.from.username ?? "", state: "awaiting_cut_link" },
         );
 
         if (pendingRef) {
           const referrer = await User.findOne({ referralCode: pendingRef });
           if (referrer && referrer.telegramId !== telegramId) {
-            await User.updateOne(
-              { telegramId },
-              { referredBy: pendingRef },
-            );
-            await User.updateOne(
-              { telegramId: referrer.telegramId },
-              { $inc: { cutBalance: 3 } },
-            );
+            await User.updateOne({ telegramId }, { referredBy: pendingRef });
             await Referral.create({
               referralCode: pendingRef,
               referrerId: referrer.telegramId,
               referredId: telegramId,
             });
-            await bot.telegram.sendMessage(
-              referrer.telegramId,
-              `🎉 Kawan kau baru je join guna link kau!\n\n*+3 cuts* dah masuk balance kau! 🔥`,
-              { parse_mode: "Markdown" },
-            );
+            console.log(`[REFERRAL_PENDING] telegramId=${telegramId} (@${username}) joined via referral from telegramId=${referrer.telegramId} (@${referrer.tiktokUsername}). Reward pending first swap completion.`);
+          } else {
+            console.log(`[REFERRAL_REJECTED] Self-referral or referrer not found for telegramId=${telegramId}, code=${pendingRef}.`);
           }
         }
 
         const me = await bot.telegram.getMe();
-        const refLink = `https://t.me/${me.username}?start=ref_${(await User.findOne({ telegramId }))!.referralCode}`;
+        const updatedUser = await User.findOne({ telegramId });
+        const refLink = `https://t.me/${me.username}?start=ref_${updatedUser!.referralCode}`;
 
         await ctx.reply(
-          `Welcome @${username}! ✅\n\nKau dapat *16 cuts* untuk start!\n\nReferral link kau:\n${refLink}\n\nSekarang hantar TikTok cut price link kau 👇`,
+          `Welcome @${username}! ✅\n\nKau dapat *${DAILY_CUT_FLOOR} cuts* untuk start!\n\nReferral link kau:\n${refLink}\n\nSekarang hantar TikTok cut price link kau 👇`,
           { parse_mode: "Markdown" },
         );
       } else {
-        await ctx.reply(
-          "Taip /start dulu la bro untuk register! 👋",
-        );
+        await ctx.reply("Taip /start dulu la bro untuk register! 👋");
       }
       return;
     }
@@ -683,29 +626,17 @@ export function createBot(): Telegraf {
       const username = extractTikTokUsername(text);
       if (!username) {
         console.warn(`[TIKTOK] Username extraction failed for telegramId=${telegramId}, input="${text.slice(0, 100)}"`);
-        await ctx.reply(
-          "Link tu pelik sikit 😕\nHantar link profile TikTok betul k — contoh:\nhttps://www.tiktok.com/@username",
-        );
+        await ctx.reply("Link tu pelik sikit 😕\nHantar link profile TikTok betul k — contoh:\nhttps://www.tiktok.com/@username");
         return;
       }
-
-      await User.updateOne(
-        { telegramId },
-        {
-          tiktokUsername: username,
-          tiktokProfileLink: text,
-          state: "awaiting_cut_link",
-        },
-      );
+      await User.updateOne({ telegramId }, { tiktokUsername: username, tiktokProfileLink: text, state: "awaiting_cut_link" });
       await ctx.reply(`Welcome @${username}! ✅\n\nSekarang hantar TikTok cut price link kau 👇`);
       return;
     }
 
     if (user.state === "awaiting_cut_link") {
       if (user.cancelCooldownUntil && user.cancelCooldownUntil > new Date()) {
-        const remaining = Math.ceil(
-          (user.cancelCooldownUntil.getTime() - Date.now()) / (1000 * 60 * 60),
-        );
+        const remaining = Math.ceil((user.cancelCooldownUntil.getTime() - Date.now()) / (1000 * 60 * 60));
         await ctx.reply(
           `❌ Akaun anda masih dalam cooldown selama *${remaining} jam* lagi.\n\nAnda boleh menggunakan sistem semula selepas tempoh ini tamat.`,
           { parse_mode: "Markdown" },
@@ -717,17 +648,14 @@ export function createBot(): Telegraf {
         const me = await bot.telegram.getMe();
         const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
         await ctx.reply(
-          `😬 Cuts kau dah habis bro!\n\n🔥 Share bot ni & dapat *+3 cuts* setiap orang yang join!\n\n${refLink}`,
+          `😬 Cuts kau dah habis bro!\n\n🔥 Share bot ni & dapat *+${REFERRAL_CUT_REWARD} cuts* setiap orang yang join & selesaikan swap!\n\n${refLink}`,
           { parse_mode: "Markdown" },
         );
         return;
       }
 
       if (!isValidTikTokLink(text)) {
-        await ctx.reply(
-          "Link ni takde life la 💀 Try lain k!\n_(Kena link TikTok yang valid)_",
-          { parse_mode: "Markdown" },
-        );
+        await ctx.reply("Link ni takde life la 💀 Try lain k!\n_(Kena link TikTok yang valid)_", { parse_mode: "Markdown" });
         return;
       }
 
@@ -746,79 +674,53 @@ export function createBot(): Telegraf {
       }
 
       const now = new Date();
-      await User.updateOne(
-        { telegramId },
-        { state: "in_queue", pendingLink: text, isWaiting: true, queuedAt: now },
-      );
-
+      await User.updateOne({ telegramId }, { state: "in_queue", pendingLink: text, isWaiting: true, queuedAt: now });
       console.log(`[QUEUE] telegramId=${telegramId} (@${user.tiktokUsername}) joined the queue at ${now.toISOString()}. isWaiting=true`);
 
-      await ctx.reply(
-        "Secured! 🔒 Finding ur partner…\n\n_(Kau dalam queue — bot tengah cari match sekarang)_",
-        { parse_mode: "Markdown" },
-      );
-
+      await ctx.reply("Secured! 🔒 Finding ur partner…\n\n_(Kau dalam queue — bot tengah cari match sekarang)_", { parse_mode: "Markdown" });
       await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
       await tryMatch(bot, telegramId);
       return;
     }
 
     if (user.state === "in_queue") {
-      await ctx.reply(
-        "Relax bro! 😅 Tengah cari partner kau. Tunggu sekejap k…",
-      );
+      await ctx.reply("Relax bro! 😅 Tengah cari partner kau. Tunggu sekejap k…");
       return;
     }
 
     if (user.state === "in_match") {
-      await ctx.reply(
-        "Sila tekan butang *✅ Done Cut* apabila anda selesai cut link partner.",
-        { parse_mode: "Markdown" },
-      );
+      await ctx.reply("Sila tekan butang *✅ Done Cut* apabila anda selesai cut link partner.", { parse_mode: "Markdown" });
       return;
     }
 
     if (user.state === "awaiting_proof") {
-      await ctx.reply(
-        "Sila hantar *screenshot* sebagai bukti anda telah cut link partner. 📸",
-        { parse_mode: "Markdown" },
-      );
+      await ctx.reply("Sila hantar *screenshot* sebagai bukti anda telah cut link partner. 📸", { parse_mode: "Markdown" });
       return;
     }
 
     if (user.state === "awaiting_partner_approval") {
-      await ctx.reply(
-        "⏳ Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.",
-      );
+      await ctx.reply("⏳ Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.");
       return;
     }
 
-    await ctx.reply(
-      "Taip /start untuk mula atau /status untuk semak status anda.",
-    );
+    await ctx.reply("Taip /start untuk mula atau /status untuk semak status anda.");
   });
 
   bot.action("done_cut", async (ctx) => {
     await ctx.answerCbQuery();
     const telegramId = ctx.from!.id;
-
     const user = await User.findOne({ telegramId });
     if (!user || user.state !== "in_match") {
       await ctx.reply("Tiada match aktif untuk disahkan.");
       return;
     }
-
     await User.updateOne({ telegramId }, { state: "awaiting_proof" });
-    await ctx.reply(
-      "📸 Sila hantar *screenshot* sebagai bukti anda telah cut link partner.",
-      { parse_mode: "Markdown" },
-    );
+    await ctx.reply("📸 Sila hantar *screenshot* sebagai bukti anda telah cut link partner.", { parse_mode: "Markdown" });
   });
 
   bot.action("cancel_match", async (ctx) => {
     await ctx.answerCbQuery();
     const telegramId = ctx.from!.id;
-
     const user = await User.findOne({ telegramId });
     if (!user || user.state !== "in_match") {
       await ctx.reply("Tiada match aktif untuk dibatalkan.");
@@ -829,11 +731,7 @@ export function createBot(): Telegraf {
       $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
       status: "active",
     });
-
-    if (!match) {
-      await ctx.reply("Tiada match aktif.");
-      return;
-    }
+    if (!match) { await ctx.reply("Tiada match aktif."); return; }
 
     const partnerId = match.user1Id === telegramId ? match.user2Id : match.user1Id;
     const partner = await User.findOne({ telegramId: partnerId });
@@ -842,10 +740,7 @@ export function createBot(): Telegraf {
 
     const timerId = match._id.toString();
     const existingTimer = matchTimers.get(timerId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      matchTimers.delete(timerId);
-    }
+    if (existingTimer) { clearTimeout(existingTimer); matchTimers.delete(timerId); }
 
     const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);
     await User.updateOne(
@@ -864,25 +759,19 @@ export function createBot(): Telegraf {
     if (partner) {
       const partnerHasLink = !!partner.pendingLink;
       const now = new Date();
-
       await User.updateOne(
         { telegramId: partnerId },
         partnerHasLink
           ? { state: "in_queue", isWaiting: true, queuedAt: now }
           : { state: "awaiting_cut_link", isWaiting: false, queuedAt: null },
       );
-
       await bot.telegram.sendMessage(
         partnerId,
         "⚠️ *Partner anda telah membatalkan match.*\n\nSistem sedang mencari partner baru untuk anda 🤝",
         { parse_mode: "Markdown" },
       );
-
       console.log(`[PARTNER_REQUEUED] telegramId=${partnerId} (@${partner.tiktokUsername ?? "unknown"}) requeued after cancel.`);
-
-      if (partnerHasLink) {
-        await tryMatch(bot, partnerId);
-      }
+      if (partnerHasLink) await tryMatch(bot, partnerId);
     }
   });
 
@@ -898,15 +787,9 @@ export function createBot(): Telegraf {
     }
 
     const match = await Match.findById(matchId);
-    if (!match || match.status !== "active") {
-      await ctx.reply("Match ini tidak lagi aktif.");
-      return;
-    }
+    if (!match || match.status !== "active") { await ctx.reply("Match ini tidak lagi aktif."); return; }
 
-    const isApproverUser1 = match.user1Id === telegramId;
-    const isApproverUser2 = match.user2Id === telegramId;
-
-    if (!isApproverUser1 && !isApproverUser2) {
+    if (match.user1Id !== telegramId && match.user2Id !== telegramId) {
       await ctx.reply("Anda bukan sebahagian daripada match ini.");
       return;
     }
@@ -914,26 +797,15 @@ export function createBot(): Telegraf {
     const isProofOwnerUser1 = match.user1Id === proofOwnerId;
 
     if (isProofOwnerUser1) {
-      if (match.user1ProofApprovedByPartner) {
-        await ctx.reply("Bukti ini sudah diapprove sebelum ini.");
-        return;
-      }
+      if (match.user1ProofApprovedByPartner) { await ctx.reply("Bukti ini sudah diapprove sebelum ini."); return; }
       await Match.updateOne({ _id: matchId }, { user1ProofApprovedByPartner: true });
     } else {
-      if (match.user2ProofApprovedByPartner) {
-        await ctx.reply("Bukti ini sudah diapprove sebelum ini.");
-        return;
-      }
+      if (match.user2ProofApprovedByPartner) { await ctx.reply("Bukti ini sudah diapprove sebelum ini."); return; }
       await Match.updateOne({ _id: matchId }, { user2ProofApprovedByPartner: true });
     }
 
     console.log(`[PROOF_APPROVED] telegramId=${telegramId} approved proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
-
-    await bot.telegram.sendMessage(
-      proofOwnerId,
-      "✅ Bukti anda telah diapprove oleh partner.",
-    );
-
+    await bot.telegram.sendMessage(proofOwnerId, "✅ Bukti anda telah diapprove oleh partner.");
     await checkAndCompleteMatch(bot, matchId);
   });
 
@@ -949,15 +821,9 @@ export function createBot(): Telegraf {
     }
 
     const match = await Match.findById(matchId);
-    if (!match || match.status !== "active") {
-      await ctx.reply("Match ini tidak lagi aktif.");
-      return;
-    }
+    if (!match || match.status !== "active") { await ctx.reply("Match ini tidak lagi aktif."); return; }
 
-    const isApproverUser1 = match.user1Id === telegramId;
-    const isApproverUser2 = match.user2Id === telegramId;
-
-    if (!isApproverUser1 && !isApproverUser2) {
+    if (match.user1Id !== telegramId && match.user2Id !== telegramId) {
       await ctx.reply("Anda bukan sebahagian daripada match ini.");
       return;
     }
@@ -965,36 +831,24 @@ export function createBot(): Telegraf {
     const isProofOwnerUser1 = match.user1Id === proofOwnerId;
 
     if (isProofOwnerUser1) {
-      await Match.updateOne(
-        { _id: matchId },
-        {
-          user1ProofSubmitted: false,
-          user1ProofMessageId: null,
-          user1ProofSubmittedAt: null,
-          user1Confirmed: false,
-        },
-      );
+      await Match.updateOne({ _id: matchId }, {
+        user1ProofSubmitted: false,
+        user1ProofMessageId: null,
+        user1ProofSubmittedAt: null,
+        user1Confirmed: false,
+      });
     } else {
-      await Match.updateOne(
-        { _id: matchId },
-        {
-          user2ProofSubmitted: false,
-          user2ProofMessageId: null,
-          user2ProofSubmittedAt: null,
-          user2Confirmed: false,
-        },
-      );
+      await Match.updateOne({ _id: matchId }, {
+        user2ProofSubmitted: false,
+        user2ProofMessageId: null,
+        user2ProofSubmittedAt: null,
+        user2Confirmed: false,
+      });
     }
 
     console.log(`[PROOF_REJECTED] telegramId=${telegramId} rejected proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
-
     await User.updateOne({ telegramId: proofOwnerId }, { state: "awaiting_proof" });
-
-    await bot.telegram.sendMessage(
-      proofOwnerId,
-      "⚠️ Bukti anda ditolak oleh partner.\n\nSila hantar screenshot yang jelas.",
-    );
-
+    await bot.telegram.sendMessage(proofOwnerId, "⚠️ Bukti anda ditolak oleh partner.\n\nSila hantar screenshot yang jelas.");
     await ctx.reply("✅ Anda telah menolak bukti partner. Mereka akan menghantar semula.");
   });
 
@@ -1003,10 +857,7 @@ export function createBot(): Telegraf {
     const telegramId = ctx.from!.id;
 
     const sus = await checkSuspension(telegramId);
-    if (sus.suspended) {
-      await ctx.reply(sus.message);
-      return;
-    }
+    if (sus.suspended) { await ctx.reply(sus.message); return; }
 
     const user = await User.findOne({ telegramId });
     if (!user) return;
@@ -1015,7 +866,7 @@ export function createBot(): Telegraf {
       const me = await bot.telegram.getMe();
       const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
       await ctx.reply(
-        `😬 Cuts kau dah habis bro!\n\n🔥 *Nak lagi? Share bot ni & dapat +3 cuts setiap orang yang join!*\n\n${refLink}`,
+        `😬 Cuts kau dah habis bro!\n\n🔥 *Nak lagi? Share bot ni & dapat +${REFERRAL_CUT_REWARD} cuts setiap orang yang join & selesaikan swap!*\n\n${refLink}`,
         { parse_mode: "Markdown" },
       );
       return;
@@ -1023,7 +874,7 @@ export function createBot(): Telegraf {
 
     await User.updateOne({ telegramId }, { state: "awaiting_cut_link" });
     await ctx.reply(
-      `🔁 Jom cut lagi!\n\nCut baki: *${user.cutBalance}/16*\n\nHantar TikTok cut price link baru kau 👇`,
+      `🔁 Jom cut lagi!\n\nCut baki: *${user.cutBalance}*\n\nHantar TikTok cut price link baru kau 👇`,
       { parse_mode: "Markdown" },
     );
   });
