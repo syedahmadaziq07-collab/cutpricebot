@@ -43681,6 +43681,8 @@ function createBot() {
         state: { $in: ["in_match", "awaiting_proof", "awaiting_partner_approval"] }
       });
       const activeNow = queueCount + activeMatchCount;
+      const me = await bot.telegram.getMe();
+      const refLink = `https://t.me/${me.username}?start=ref_${existingUser.referralCode}`;
       await ctx.reply(
         `Welcome to CutPricebot!!!
 Updated: ${updatedTime}
@@ -43702,8 +43704,8 @@ Ayy @${existingUser.tiktokUsername} is back again \u{1F606}
 
 \u{1F381} Invite friends & earn extra cuts!
 
-Referral code:
-\`${existingUser.referralCode}\`
+\u{1F517} Your Referral Link:
+\`${refLink}\`
 
 \u2728 Earn +3 cuts for every valid referral
 \u{1F4CC} Max balance: 20 cuts

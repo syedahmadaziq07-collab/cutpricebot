@@ -743,6 +743,9 @@ export function createBot(): Telegraf {
       });
       const activeNow = queueCount + activeMatchCount;
 
+      const me = await bot.telegram.getMe();
+      const refLink = `https://t.me/${me.username}?start=ref_${existingUser.referralCode}`;
+
       await ctx.reply(
         `Welcome to CutPricebot!!!\nUpdated: ${updatedTime}\n\n` +
         `👋 Hi ${firstName}!\n\n` +
@@ -755,8 +758,8 @@ export function createBot(): Telegraf {
         `Ayy @${existingUser.tiktokUsername} is back again 😆\n\n` +
         `🎟 Remaining cuts: ${existingUser.cutBalance}\n\n` +
         `🎁 Invite friends & earn extra cuts!\n\n` +
-        `Referral code:\n` +
-        `\`${existingUser.referralCode}\`\n\n` +
+        `🔗 Your Referral Link:\n` +
+        `\`${refLink}\`\n\n` +
         `✨ Earn +3 cuts for every valid referral\n` +
         `📌 Max balance: 20 cuts\n\n` +
         `━━━━━━━━━━━━━━━\n\n` +
