@@ -42268,6 +42268,97 @@ _(Had harian: ${DAILY_REFERRAL_CAP} cuts daripada referral)_`,
       { parse_mode: "Markdown" }
     );
   });
+  bot.command("reset_user", async (ctx) => {
+    const adminIds = (process.env["ADMIN_IDS"] ?? "").split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
+    if (!adminIds.includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    if (args.length === 0) {
+      await ctx.reply(
+        "\u2139\uFE0F *Usage:*\n`/reset_user @username` \u2014 reset state & queue\n`/reset_user @username --cooldown` \u2014 also clear all cooldowns\n`/reset_user @username --strikes` \u2014 also clear strikes & unban\n`/reset_user @username --all` \u2014 full reset (state + cooldowns + strikes)",
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+    const usernameArg = args[0].replace(/^@/, "");
+    const flags = new Set(args.slice(1));
+    const clearCooldowns = flags.has("--cooldown") || flags.has("--all");
+    const clearStrikes = flags.has("--strikes") || flags.has("--all");
+    const user = await User.findOne({ tiktokUsername: usernameArg });
+    if (!user) {
+      await ctx.reply(`\u274C User @${usernameArg} not found.`);
+      return;
+    }
+    const { telegramId } = user;
+    await Queue.deleteOne({ telegramId });
+    const activeMatch = await Match.findOne({
+      $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
+      status: "active"
+    });
+    if (activeMatch) {
+      await Match.updateOne({ _id: activeMatch._id }, { status: "cancelled" });
+      const timerId = activeMatch._id.toString();
+      const existingTimer = matchTimers.get(timerId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        matchTimers.delete(timerId);
+      }
+      const partnerId = activeMatch.user1Id === telegramId ? activeMatch.user2Id : activeMatch.user1Id;
+      const partner = await User.findOne({ telegramId: partnerId });
+      try {
+        await bot.telegram.sendMessage(
+          partnerId,
+          "\u26A0\uFE0F *Partner anda telah di-reset oleh admin.*\n\nSistem sedang mencari partner baru untuk anda \u{1F91D}",
+          { parse_mode: "Markdown" }
+        );
+      } catch {
+      }
+      if (partner?.pendingLink) {
+        await addToQueue(bot, partnerId, partner.pendingLink);
+      } else {
+        await User.updateOne({ telegramId: partnerId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+      }
+    }
+    const update = {
+      state: "awaiting_cut_link",
+      isWaiting: false,
+      queuedAt: null,
+      pendingLink: null
+    };
+    if (clearCooldowns) {
+      update["cancelCooldownUntil"] = null;
+      update["suspendedUntil"] = null;
+    }
+    if (clearStrikes) {
+      update["strikes"] = 0;
+      update["isBanned"] = false;
+    }
+    await User.updateOne({ telegramId }, update);
+    const appliedFlags = ["state reset", "queue cleared"];
+    if (clearCooldowns) appliedFlags.push("cooldowns cleared");
+    if (clearStrikes) appliedFlags.push("strikes cleared", "ban lifted");
+    if (activeMatch) appliedFlags.push("active match cancelled");
+    console.log(`[ADMIN] reset_user: telegramId=${telegramId} (@${usernameArg}) reset by admin telegramId=${ctx.from.id}. Applied: ${appliedFlags.join(", ")}.`);
+    const lines = [
+      `\u2705 *@${usernameArg} has been reset.*
+`,
+      `\u2022 State \u2192 \`awaiting_cut_link\``,
+      `\u2022 Queue entry removed`,
+      clearCooldowns ? `\u2022 Cooldowns cleared (cancelCooldownUntil + suspendedUntil)` : null,
+      clearStrikes ? `\u2022 Strikes reset to 0, ban lifted` : null,
+      activeMatch ? `\u2022 Active match cancelled, partner notified` : null
+    ].filter(Boolean).join("\n");
+    await ctx.reply(lines, { parse_mode: "Markdown" });
+    try {
+      await bot.telegram.sendMessage(
+        telegramId,
+        "\u{1F504} Akaun anda telah di-reset oleh admin.\n\nAnda boleh menggunakan sistem semula sekarang. Hantar TikTok cut price link kau \u{1F447}"
+      );
+    } catch {
+    }
+  });
   bot.command("status", async (ctx) => {
     const user = await User.findOne({ telegramId: ctx.from.id });
     if (!user || user.tiktokUsername === "__pending__") {

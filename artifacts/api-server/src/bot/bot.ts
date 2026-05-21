@@ -672,6 +672,117 @@ export function createBot(): Telegraf {
     );
   });
 
+  bot.command("reset_user", async (ctx) => {
+    const adminIds = (process.env["ADMIN_IDS"] ?? "")
+      .split(",")
+      .map(s => parseInt(s.trim(), 10))
+      .filter(n => !isNaN(n));
+    if (!adminIds.includes(ctx.from.id)) {
+      await ctx.reply("🚫 Unauthorized.");
+      return;
+    }
+
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    if (args.length === 0) {
+      await ctx.reply(
+        "ℹ️ *Usage:*\n" +
+        "`/reset_user @username` — reset state & queue\n" +
+        "`/reset_user @username --cooldown` — also clear all cooldowns\n" +
+        "`/reset_user @username --strikes` — also clear strikes & unban\n" +
+        "`/reset_user @username --all` — full reset (state + cooldowns + strikes)",
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+
+    const usernameArg = args[0]!.replace(/^@/, "");
+    const flags = new Set(args.slice(1));
+    const clearCooldowns = flags.has("--cooldown") || flags.has("--all");
+    const clearStrikes   = flags.has("--strikes")  || flags.has("--all");
+
+    const user = await User.findOne({ tiktokUsername: usernameArg });
+    if (!user) {
+      await ctx.reply(`❌ User @${usernameArg} not found.`);
+      return;
+    }
+
+    const { telegramId } = user;
+
+    // Always: remove from queue + reset core state
+    await Queue.deleteOne({ telegramId });
+
+    // Cancel any active match for this user
+    const activeMatch = await Match.findOne({
+      $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
+      status: "active",
+    });
+    if (activeMatch) {
+      await Match.updateOne({ _id: activeMatch._id }, { status: "cancelled" });
+      const timerId = activeMatch._id.toString();
+      const existingTimer = matchTimers.get(timerId);
+      if (existingTimer) { clearTimeout(existingTimer); matchTimers.delete(timerId); }
+      // Notify partner if present
+      const partnerId = activeMatch.user1Id === telegramId ? activeMatch.user2Id : activeMatch.user1Id;
+      const partner = await User.findOne({ telegramId: partnerId });
+      try {
+        await bot.telegram.sendMessage(
+          partnerId,
+          "⚠️ *Partner anda telah di-reset oleh admin.*\n\nSistem sedang mencari partner baru untuk anda 🤝",
+          { parse_mode: "Markdown" },
+        );
+      } catch { /* partner may have blocked bot */ }
+      if (partner?.pendingLink) {
+        await addToQueue(bot, partnerId, partner.pendingLink);
+      } else {
+        await User.updateOne({ telegramId: partnerId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+      }
+    }
+
+    const update: Record<string, unknown> = {
+      state: "awaiting_cut_link",
+      isWaiting: false,
+      queuedAt: null,
+      pendingLink: null,
+    };
+
+    if (clearCooldowns) {
+      update["cancelCooldownUntil"] = null;
+      update["suspendedUntil"] = null;
+    }
+    if (clearStrikes) {
+      update["strikes"] = 0;
+      update["isBanned"] = false;
+    }
+
+    await User.updateOne({ telegramId }, update);
+
+    const appliedFlags: string[] = ["state reset", "queue cleared"];
+    if (clearCooldowns) appliedFlags.push("cooldowns cleared");
+    if (clearStrikes)   appliedFlags.push("strikes cleared", "ban lifted");
+    if (activeMatch)    appliedFlags.push("active match cancelled");
+
+    console.log(`[ADMIN] reset_user: telegramId=${telegramId} (@${usernameArg}) reset by admin telegramId=${ctx.from.id}. Applied: ${appliedFlags.join(", ")}.`);
+
+    const lines = [
+      `✅ *@${usernameArg} has been reset.*\n`,
+      `• State → \`awaiting_cut_link\``,
+      `• Queue entry removed`,
+      clearCooldowns ? `• Cooldowns cleared (cancelCooldownUntil + suspendedUntil)` : null,
+      clearStrikes   ? `• Strikes reset to 0, ban lifted` : null,
+      activeMatch    ? `• Active match cancelled, partner notified` : null,
+    ].filter(Boolean).join("\n");
+
+    await ctx.reply(lines, { parse_mode: "Markdown" });
+
+    // Notify the reset user
+    try {
+      await bot.telegram.sendMessage(
+        telegramId,
+        "🔄 Akaun anda telah di-reset oleh admin.\n\nAnda boleh menggunakan sistem semula sekarang. Hantar TikTok cut price link kau 👇",
+      );
+    } catch { /* user may have blocked bot */ }
+  });
+
   bot.command("status", async (ctx) => {
     const user = await User.findOne({ telegramId: ctx.from.id });
     if (!user || user.tiktokUsername === "__pending__") {
