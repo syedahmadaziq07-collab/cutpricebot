@@ -42936,7 +42936,7 @@ ${refLink}`,
       return;
     }
     if (user.state === "inqueue") {
-      await ctx.reply("Relax bro! \u{1F605} Tengah cari partner kau. Tunggu sekejap k\u2026");
+      await ctx.reply("Still finding your cut buddy \u{1F512}\u2728\n\nHang tight for a few more seconds \u{1F440}");
       return;
     }
     if (user.state === "in_match") {

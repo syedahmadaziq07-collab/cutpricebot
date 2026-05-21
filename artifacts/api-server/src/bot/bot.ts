@@ -1352,7 +1352,7 @@ export function createBot(): Telegraf {
     }
 
     if (user.state === "inqueue") {
-      await ctx.reply("Relax bro! 😅 Tengah cari partner kau. Tunggu sekejap k…");
+      await ctx.reply("Still finding your cut buddy 🔒✨\n\nHang tight for a few more seconds 👀");
       return;
     }
 
