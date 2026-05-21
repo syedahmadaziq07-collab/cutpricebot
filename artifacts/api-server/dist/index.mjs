@@ -43700,7 +43700,18 @@ Ayy @${existingUser.tiktokUsername} is back again \u{1F606}
 
 \u{1F39F} Remaining cuts: ${existingUser.cutBalance}
 
-Drop your TikTok cut price link below to start swapping \u{1F517}\u2728`
+\u{1F381} Invite friends & earn extra cuts!
+
+Referral code:
+\`${existingUser.referralCode}\`
+
+\u2728 Earn +3 cuts for every valid referral
+\u{1F4CC} Max balance: 20 cuts
+
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+
+Drop your TikTok cut price link below to start swapping \u{1F517}\u2728`,
+        { parse_mode: "Markdown" }
       );
       await Queue.deleteOne({ telegramId });
       await User.updateOne({ telegramId }, { state: "awaiting_cut_link" });

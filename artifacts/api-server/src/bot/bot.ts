@@ -754,7 +754,14 @@ export function createBot(): Telegraf {
         `━━━━━━━━━━━━━━━\n\n` +
         `Ayy @${existingUser.tiktokUsername} is back again 😆\n\n` +
         `🎟 Remaining cuts: ${existingUser.cutBalance}\n\n` +
+        `🎁 Invite friends & earn extra cuts!\n\n` +
+        `Referral code:\n` +
+        `\`${existingUser.referralCode}\`\n\n` +
+        `✨ Earn +3 cuts for every valid referral\n` +
+        `📌 Max balance: 20 cuts\n\n` +
+        `━━━━━━━━━━━━━━━\n\n` +
         `Drop your TikTok cut price link below to start swapping 🔗✨`,
+        { parse_mode: "Markdown" },
       );
       // Clear any stale Queue entry before resetting state
       await Queue.deleteOne({ telegramId });
