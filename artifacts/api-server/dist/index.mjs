@@ -44562,6 +44562,36 @@ ${refLink}`,
       await ctx.reply("Locked in! \u{1F512} Hunting for your next cut buddy\u2026 \u2728\n\n_(You're in the queue right now \u2014 matching you with someone active \u{1F440})_", { parse_mode: "Markdown" });
       await addToQueue(bot, telegramId, text);
       await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
+      const linkSubmitTime = (/* @__PURE__ */ new Date()).toLocaleString("en-MY", {
+        timeZone: "Asia/Kuala_Lumpur",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      });
+      const linkSubmitDisplayName = ctx.from.first_name ?? "Unknown";
+      const linkSubmitTgUsername = ctx.from.username ? `@${ctx.from.username}` : "No username";
+      const adminLinkMsg = `\u{1F517} USER SUBMITTED CUT LINK!
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+\u2022 Name: ${linkSubmitDisplayName}
+\u2022 Telegram Username: ${linkSubmitTgUsername}
+\u2022 TikTok Username: @${user.tiktokUsername}
+\u2022 ID: ${telegramId}
+\u2022 Link: ${text}
+\u2022 Time: ${linkSubmitTime} MYT
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+\u{1F4CC} Current user is now looking for a cut partner \u2728`;
+      for (const adminId of getAdminIds()) {
+        try {
+          await bot.telegram.sendMessage(adminId, adminLinkMsg);
+          console.log(`[ADMIN_LINK_SUBMIT_NOTIFIED] telegramId=${telegramId} (@${user.tiktokUsername}) \u2014 notified adminId=${adminId} with link="${text}"`);
+        } catch (err) {
+          console.error(`[ADMIN_LINK_SUBMIT_NOTIFY_FAILED] telegramId=${telegramId} \u2014 failed to notify adminId=${adminId}: ${err.message}`);
+        }
+      }
       return;
     }
     if (user.state === "inqueue") {

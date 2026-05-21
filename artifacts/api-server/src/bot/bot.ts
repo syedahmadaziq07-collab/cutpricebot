@@ -1660,6 +1660,40 @@ export function createBot(): Telegraf {
       // Add to Queue and attempt match first, then notify other users
       await addToQueue(bot, telegramId, text);
       await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
+
+      // Admin notification — sent every time a valid cut link is submitted
+      const linkSubmitTime = new Date().toLocaleString("en-MY", {
+        timeZone: "Asia/Kuala_Lumpur",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      });
+      const linkSubmitDisplayName = ctx.from.first_name ?? "Unknown";
+      const linkSubmitTgUsername = ctx.from.username ? `@${ctx.from.username}` : "No username";
+      const adminLinkMsg =
+        `🔗 USER SUBMITTED CUT LINK!\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `• Name: ${linkSubmitDisplayName}\n` +
+        `• Telegram Username: ${linkSubmitTgUsername}\n` +
+        `• TikTok Username: @${user.tiktokUsername}\n` +
+        `• ID: ${telegramId}\n` +
+        `• Link: ${text}\n` +
+        `• Time: ${linkSubmitTime} MYT\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `📌 Current user is now looking for a cut partner ✨`;
+      for (const adminId of getAdminIds()) {
+        try {
+          await bot.telegram.sendMessage(adminId, adminLinkMsg);
+          console.log(`[ADMIN_LINK_SUBMIT_NOTIFIED] telegramId=${telegramId} (@${user.tiktokUsername}) — notified adminId=${adminId} with link="${text}"`);
+        } catch (err) {
+          console.error(`[ADMIN_LINK_SUBMIT_NOTIFY_FAILED] telegramId=${telegramId} — failed to notify adminId=${adminId}: ${(err as Error).message}`);
+        }
+      }
+
       return;
     }
 
