@@ -167,6 +167,23 @@ function isValidTikTokLink(url: string): boolean {
   return /(?:https?:\/\/)?(?:www\.)?(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\//i.test(url);
 }
 
+// Returns true ONLY for valid cut/campaign/share links.
+// Accepts: vt.tiktok.com/... | tiktok.com/t/... (with or without https/www)
+function isValidCutLink(input: string): boolean {
+  const trimmed = input.trim();
+  if (/https?:\/\/vt\.tiktok\.com\//i.test(trimmed)) return true;
+  if (/(?:https?:\/\/)?(?:www\.)?tiktok\.com\/t\//i.test(trimmed)) return true;
+  return false;
+}
+
+// Returns true for TikTok profile links (tiktok.com/@username or @username paths).
+function isTikTokProfileLink(input: string): boolean {
+  const trimmed = input.trim();
+  if (/(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@/i.test(trimmed)) return true;
+  if (/^@[\w.]+$/i.test(trimmed)) return true;
+  return false;
+}
+
 async function checkAndApplyDailyReset(bot: Telegraf, telegramId: number): Promise<void> {
   const user = await User.findOne({ telegramId });
   if (!user || user.tiktokUsername === "__pending__") return;
@@ -1854,10 +1871,23 @@ export function createBot(): Telegraf {
         return;
       }
 
-      if (!isValidTikTokLink(text)) {
-        await ctx.reply("Link ni takde life la 💀 Try lain k!\n_(Kena link TikTok yang valid)_", { parse_mode: "Markdown" });
+      if (isTikTokProfileLink(text)) {
+        console.log(`[INVALID_PROFILE_LINK_REJECTED] telegramId=${telegramId} (@${user.tiktokUsername}) submitted profile link: "${text}"`);
+        await ctx.reply(
+          "❌ That looks like a TikTok profile link 😵‍💫\n\nPlease send your TikTok CUT PRICE link instead 👇✨\n\nExample:\nhttps://vt.tiktok.com/ZSxxxx/",
+        );
         return;
       }
+
+      if (!isValidCutLink(text)) {
+        console.log(`[INVALID_PROFILE_LINK_REJECTED] telegramId=${telegramId} (@${user.tiktokUsername}) submitted non-cut link: "${text}"`);
+        await ctx.reply(
+          "❌ That looks like a TikTok profile link 😵‍💫\n\nPlease send your TikTok CUT PRICE link instead 👇✨\n\nExample:\nhttps://vt.tiktok.com/ZSxxxx/",
+        );
+        return;
+      }
+
+      console.log(`[VALID_CUT_LINK_ACCEPTED] telegramId=${telegramId} (@${user.tiktokUsername}) submitted valid cut link: "${text}"`);
 
       const activeMatch = await Match.findOne({
         $or: [{ user1Id: telegramId }, { user2Id: telegramId }],

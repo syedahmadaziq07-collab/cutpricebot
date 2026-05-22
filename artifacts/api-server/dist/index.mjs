@@ -43159,8 +43159,17 @@ function isTikTokCutLink(input) {
   if (/https?:\/\/(?:www\.)?tiktok\.com\/t\//i.test(trimmed)) return true;
   return false;
 }
-function isValidTikTokLink(url) {
-  return /(?:https?:\/\/)?(?:www\.)?(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\//i.test(url);
+function isValidCutLink(input) {
+  const trimmed = input.trim();
+  if (/https?:\/\/vt\.tiktok\.com\//i.test(trimmed)) return true;
+  if (/(?:https?:\/\/)?(?:www\.)?tiktok\.com\/t\//i.test(trimmed)) return true;
+  return false;
+}
+function isTikTokProfileLink(input) {
+  const trimmed = input.trim();
+  if (/(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@/i.test(trimmed)) return true;
+  if (/^@[\w.]+$/i.test(trimmed)) return true;
+  return false;
 }
 async function checkAndApplyDailyReset(bot, telegramId) {
   const user = await User.findOne({ telegramId });
@@ -44740,10 +44749,21 @@ ${refLink}`,
         );
         return;
       }
-      if (!isValidTikTokLink(text)) {
-        await ctx.reply("Link ni takde life la \u{1F480} Try lain k!\n_(Kena link TikTok yang valid)_", { parse_mode: "Markdown" });
+      if (isTikTokProfileLink(text)) {
+        console.log(`[INVALID_PROFILE_LINK_REJECTED] telegramId=${telegramId} (@${user.tiktokUsername}) submitted profile link: "${text}"`);
+        await ctx.reply(
+          "\u274C That looks like a TikTok profile link \u{1F635}\u200D\u{1F4AB}\n\nPlease send your TikTok CUT PRICE link instead \u{1F447}\u2728\n\nExample:\nhttps://vt.tiktok.com/ZSxxxx/"
+        );
         return;
       }
+      if (!isValidCutLink(text)) {
+        console.log(`[INVALID_PROFILE_LINK_REJECTED] telegramId=${telegramId} (@${user.tiktokUsername}) submitted non-cut link: "${text}"`);
+        await ctx.reply(
+          "\u274C That looks like a TikTok profile link \u{1F635}\u200D\u{1F4AB}\n\nPlease send your TikTok CUT PRICE link instead \u{1F447}\u2728\n\nExample:\nhttps://vt.tiktok.com/ZSxxxx/"
+        );
+        return;
+      }
+      console.log(`[VALID_CUT_LINK_ACCEPTED] telegramId=${telegramId} (@${user.tiktokUsername}) submitted valid cut link: "${text}"`);
       const activeMatch = await Match.findOne({
         $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
         status: "active"
