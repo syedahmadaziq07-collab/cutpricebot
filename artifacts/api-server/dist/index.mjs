@@ -43703,6 +43703,47 @@ Remaining cuts: *${newBalance}* \u{1F496}`,
       await grantReferralReward(bot, uid);
     }
   }
+  try {
+    const [uA, uB] = await Promise.all([
+      User.findOne({ telegramId: match.user1Id }).select("telegramUsername tiktokUsername"),
+      User.findOne({ telegramId: match.user2Id }).select("telegramUsername tiktokUsername")
+    ]);
+    const mytime = (/* @__PURE__ */ new Date()).toLocaleString("en-MY", {
+      timeZone: "Asia/Kuala_Lumpur",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    });
+    const adminMsg = `\u2705 SWAP COMPLETED!
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+User A:
+\u2022 Telegram: @${uA?.telegramUsername || "N/A"}
+\u2022 TikTok: @${uA?.tiktokUsername || "N/A"}
+\u2022 ID: ${match.user1Id}
+
+User B:
+\u2022 Telegram: @${uB?.telegramUsername || "N/A"}
+\u2022 TikTok: @${uB?.tiktokUsername || "N/A"}
+\u2022 ID: ${match.user2Id}
+
+\u2022 Time: ${mytime} MYT
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+Both users completed proof approval successfully \u{1F91D}\u2728`;
+    for (const adminId of getAdminIds()) {
+      try {
+        await bot.telegram.sendMessage(adminId, adminMsg);
+        console.log(`[ADMIN_SWAP_COMPLETED_NOTIFIED] matchId=${matchId} notified adminId=${adminId}`);
+      } catch (err) {
+        console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED] matchId=${matchId} adminId=${adminId}: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED] matchId=${matchId} swap-completed fetch error: ${err.message}`);
+  }
 }
 function getAdminIds() {
   return (process.env["ADMIN_IDS"] ?? "").split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
@@ -44909,6 +44950,48 @@ Weekly rejects: *${newWeeklyCount}* | Total rejects: *${totalRejects}*`,
     } catch {
     }
     await ctx.reply("\u2705 *Match dibatalkan.*\nTerima kasih kerana membantu menjaga sistem CutSquad.", { parse_mode: "Markdown" });
+    try {
+      const [rejectedUser, rejectorUser] = await Promise.all([
+        User.findOne({ telegramId: proofOwnerId }).select("telegramUsername tiktokUsername"),
+        User.findOne({ telegramId }).select("telegramUsername tiktokUsername")
+      ]);
+      const mytime = (/* @__PURE__ */ new Date()).toLocaleString("en-MY", {
+        timeZone: "Asia/Kuala_Lumpur",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      });
+      const adminMsg = `\u274C PROOF REJECTED!
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+Rejected User:
+\u2022 Telegram: @${rejectedUser?.telegramUsername || "N/A"}
+\u2022 TikTok: @${rejectedUser?.tiktokUsername || "N/A"}
+\u2022 ID: ${proofOwnerId}
+
+Rejected By:
+\u2022 Telegram: @${rejectorUser?.telegramUsername || "N/A"}
+\u2022 TikTok: @${rejectorUser?.tiktokUsername || "N/A"}
+\u2022 ID: ${telegramId}
+
+\u2022 Action: 24h cooldown applied
+\u2022 Time: ${mytime} MYT
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+Proof was rejected by partner. User has been restricted for 24 hours \u{1F6AB}`;
+      for (const adminId of getAdminIds()) {
+        try {
+          await bot.telegram.sendMessage(adminId, adminMsg);
+          console.log(`[ADMIN_PROOF_REJECTED_NOTIFIED] matchId=${matchId} proofOwner=${proofOwnerId} rejector=${telegramId} notified adminId=${adminId}`);
+        } catch (err) {
+          console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED] matchId=${matchId} proof-rejected adminId=${adminId}: ${err.message}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED] matchId=${matchId} proof-rejected fetch error: ${err.message}`);
+    }
     const rejecter = await User.findOne({ telegramId }).select("pendingLink");
     const rejecterLink = rejecter?.pendingLink ?? (match.user1Id === telegramId ? match.link1 : match.link2);
     if (rejecterLink) {

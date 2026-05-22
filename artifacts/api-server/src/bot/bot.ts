@@ -768,6 +768,44 @@ async function checkAndCompleteMatch(bot: Telegraf, matchId: string): Promise<vo
       await grantReferralReward(bot, uid);
     }
   }
+
+  // Admin notification — swap completed
+  try {
+    const [uA, uB] = await Promise.all([
+      User.findOne({ telegramId: match.user1Id }).select("telegramUsername tiktokUsername"),
+      User.findOne({ telegramId: match.user2Id }).select("telegramUsername tiktokUsername"),
+    ]);
+    const mytime = new Date().toLocaleString("en-MY", {
+      timeZone: "Asia/Kuala_Lumpur",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      hour12: false,
+    });
+    const adminMsg =
+      `✅ SWAP COMPLETED!\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `User A:\n` +
+      `• Telegram: @${uA?.telegramUsername || "N/A"}\n` +
+      `• TikTok: @${uA?.tiktokUsername || "N/A"}\n` +
+      `• ID: ${match.user1Id}\n\n` +
+      `User B:\n` +
+      `• Telegram: @${uB?.telegramUsername || "N/A"}\n` +
+      `• TikTok: @${uB?.tiktokUsername || "N/A"}\n` +
+      `• ID: ${match.user2Id}\n\n` +
+      `• Time: ${mytime} MYT\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `Both users completed proof approval successfully 🤝✨`;
+    for (const adminId of getAdminIds()) {
+      try {
+        await bot.telegram.sendMessage(adminId, adminMsg);
+        console.log(`[ADMIN_SWAP_COMPLETED_NOTIFIED] matchId=${matchId} notified adminId=${adminId}`);
+      } catch (err) {
+        console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED] matchId=${matchId} adminId=${adminId}: ${(err as Error).message}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED] matchId=${matchId} swap-completed fetch error: ${(err as Error).message}`);
+  }
 }
 
 function getAdminIds(): number[] {
@@ -2063,6 +2101,45 @@ export function createBot(): Telegraf {
 
     // Notify User B (rejecter) — match cancelled, thank you
     await ctx.reply("✅ *Match dibatalkan.*\nTerima kasih kerana membantu menjaga sistem CutSquad.", { parse_mode: "Markdown" });
+
+    // Admin notification — proof rejected
+    try {
+      const [rejectedUser, rejectorUser] = await Promise.all([
+        User.findOne({ telegramId: proofOwnerId }).select("telegramUsername tiktokUsername"),
+        User.findOne({ telegramId }).select("telegramUsername tiktokUsername"),
+      ]);
+      const mytime = new Date().toLocaleString("en-MY", {
+        timeZone: "Asia/Kuala_Lumpur",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+      });
+      const adminMsg =
+        `❌ PROOF REJECTED!\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `Rejected User:\n` +
+        `• Telegram: @${rejectedUser?.telegramUsername || "N/A"}\n` +
+        `• TikTok: @${rejectedUser?.tiktokUsername || "N/A"}\n` +
+        `• ID: ${proofOwnerId}\n\n` +
+        `Rejected By:\n` +
+        `• Telegram: @${rejectorUser?.telegramUsername || "N/A"}\n` +
+        `• TikTok: @${rejectorUser?.tiktokUsername || "N/A"}\n` +
+        `• ID: ${telegramId}\n\n` +
+        `• Action: 24h cooldown applied\n` +
+        `• Time: ${mytime} MYT\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `Proof was rejected by partner. User has been restricted for 24 hours 🚫`;
+      for (const adminId of getAdminIds()) {
+        try {
+          await bot.telegram.sendMessage(adminId, adminMsg);
+          console.log(`[ADMIN_PROOF_REJECTED_NOTIFIED] matchId=${matchId} proofOwner=${proofOwnerId} rejector=${telegramId} notified adminId=${adminId}`);
+        } catch (err) {
+          console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED] matchId=${matchId} proof-rejected adminId=${adminId}: ${(err as Error).message}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED] matchId=${matchId} proof-rejected fetch error: ${(err as Error).message}`);
+    }
 
     // Re-queue the innocent rejecter (User B) with original FIFO priority
     const rejecter = await User.findOne({ telegramId }).select("pendingLink");
