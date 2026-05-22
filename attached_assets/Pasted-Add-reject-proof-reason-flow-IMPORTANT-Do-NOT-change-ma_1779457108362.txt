@@ -1,0 +1,134 @@
+Add reject-proof reason flow.
+
+IMPORTANT:
+Do NOT change matchmaking logic.
+Do NOT change cooldown logic.
+Do NOT change proof approval logic.
+Do NOT change queue logic.
+Only add a reject reason step before proof rejection is finalized.
+
+━━━━━━━━━━━━━━━━━━
+NEW FLOW
+━━━━━━━━━━━━━━━━━━
+
+Current flow:
+User clicks ❌ Reject Proof
+→ proof rejected immediately
+
+New flow:
+User clicks ❌ Reject Proof
+→ bot asks for rejection reason
+→ partner types reason
+→ THEN rejection is finalized
+
+━━━━━━━━━━━━━━━━━━
+REJECT REASON MESSAGE
+━━━━━━━━━━━━━━━━━━
+
+When partner clicks ❌ Reject Proof:
+
+Send:
+
+Why are you rejecting this proof? 👀
+
+Please type a short reason below ✍️
+
+Examples:
+• Wrong screenshot
+• Didn’t cut yet
+• Fake proof
+• Username not matching
+• Screenshot unclear
+
+━━━━━━━━━━━━━━━━━━
+VALIDATION
+━━━━━━━━━━━━━━━━━━
+
+- Minimum 5 characters
+- Reject empty/spam replies
+
+If invalid:
+
+Please enter a proper rejection reason 😵‍💫
+
+━━━━━━━━━━━━━━━━━━
+AFTER REASON SUBMITTED
+━━━━━━━━━━━━━━━━━━
+
+Then continue normal reject flow:
+- reject proof
+- apply strike/cooldown
+- admin notification
+- user notification
+
+Do NOT change existing punishment system.
+
+━━━━━━━━━━━━━━━━━━
+USER REJECTED MESSAGE
+━━━━━━━━━━━━━━━━━━
+
+❌ Your proof was rejected by your cut buddy 😵‍💫
+
+Reason:
+“{rejectReason}”
+
+⚠️ Strike applied:
+• 1st → 24h ban 🚫
+• 2nd → 24h ban 🚫
+• 3rd → permanent ban 💀
+
+━━━━━━━━━━━━━━━━━━
+ADMIN LOG UPDATE
+━━━━━━━━━━━━━━━━━━
+
+Add reject reason inside admin logs.
+
+Example:
+
+❌ PROOF REJECTED!
+
+Rejected User:
+@username
+
+Rejected By:
+@partner
+
+Reason:
+Wrong screenshot
+
+━━━━━━━━━━━━━━━━━━
+DATABASE / STATE
+━━━━━━━━━━━━━━━━━━
+
+Add temporary state:
+awaiting_reject_reason
+
+Store:
+rejectReason
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add logs:
+- REJECT_REASON_REQUESTED
+- REJECT_REASON_RECEIVED
+- REJECT_REASON_INVALID
+- PROOF_REJECTED_WITH_REASON
+
+━━━━━━━━━━━━━━━━━━
+IMPORTANT
+━━━━━━━━━━━━━━━━━━
+
+- Only finalize reject AFTER reason submitted
+- Keep approve flow unchanged
+- Keep all existing notifications working
+- Keep all current anti-ghost/cooldown logic untouched
+
+━━━━━━━━━━━━━━━━━━
+BUILD
+━━━━━━━━━━━━━━━━━━
+
+Build project.
+Verify TypeScript errors.
+Commit and push GitHub main.

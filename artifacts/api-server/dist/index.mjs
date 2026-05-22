@@ -43140,6 +43140,7 @@ var matchTimers = /* @__PURE__ */ new Map();
 var proofTimers = /* @__PURE__ */ new Map();
 var proofReminderTimers = /* @__PURE__ */ new Map();
 var adminBroadcastPending = /* @__PURE__ */ new Set();
+var pendingRejectReasons = /* @__PURE__ */ new Map();
 var NO_RESPONSE_TIMEOUT_MS = 10 * 60 * 1e3;
 var NO_RESPONSE_REMINDER_MS = 8 * 60 * 1e3;
 var NO_RESPONSE_COOLDOWN_30M_MS = 30 * 60 * 1e3;
@@ -43423,7 +43424,7 @@ async function handleMatchExpiry(bot, matchId, user1Id, user2Id) {
   for (const uid of [user1Id, user2Id]) {
     const user = await User.findOne({ telegramId: uid });
     if (!user) continue;
-    const activeStates = ["in_match", "awaiting_proof_account_selection", "awaiting_proof_cut_username", "awaiting_proof", "awaiting_partner_approval"];
+    const activeStates = ["in_match", "awaiting_proof_account_selection", "awaiting_proof_cut_username", "awaiting_proof", "awaiting_partner_approval", "awaiting_reject_reason"];
     if (!activeStates.includes(user.state)) continue;
     const proofTimerKey = `proof:${matchId}:${uid}`;
     const existingProofTimer = proofTimers.get(proofTimerKey);
@@ -44525,7 +44526,8 @@ Candidates found: ${candidates.length}`);
       awaiting_proof_account_selection: "\u{1F50D} Pilih akaun bukti",
       awaiting_proof_cut_username: "\u270D\uFE0F Masukkan username",
       awaiting_proof: "\u{1F4F8} Menunggu bukti",
-      awaiting_partner_approval: "\u23F3 Menunggu kelulusan partner"
+      awaiting_partner_approval: "\u23F3 Menunggu kelulusan partner",
+      awaiting_reject_reason: "\u270D\uFE0F Masukkan sebab tolak"
     };
     await ctx.reply(
       `\u{1F4CA} *Status kau:*
@@ -44925,6 +44927,23 @@ ${refLink}`,
       await ctx.reply("Still finding your cut buddy \u{1F512}\u2728\n\nHang tight for a few more seconds \u{1F440}");
       return;
     }
+    if (user.state === "awaiting_reject_reason") {
+      const pending = pendingRejectReasons.get(telegramId);
+      if (!pending) {
+        await User.updateOne({ telegramId }, { state: "awaiting_partner_approval" });
+        await ctx.reply("\u26A0\uFE0F Something went wrong. Please try again.");
+        return;
+      }
+      if (text.length < 5) {
+        console.log(`[REJECT_REASON_INVALID] telegramId=${telegramId} \u2014 reason too short: "${text}"`);
+        await ctx.reply("Please enter a proper rejection reason \u{1F635}\u200D\u{1F4AB}\n\n_(Minimum 5 characters)_", { parse_mode: "Markdown" });
+        return;
+      }
+      console.log(`[REJECT_REASON_RECEIVED] telegramId=${telegramId} matchId=${pending.matchId} reason="${text}"`);
+      pendingRejectReasons.delete(telegramId);
+      await finalizeRejectProof(bot, ctx.chat.id, telegramId, pending.matchId, pending.proofOwnerId, text);
+      return;
+    }
     if (user.state === "awaiting_proof_cut_username") {
       const rawInput = text.trim();
       const normalizedUsername = rawInput.replace(/^@/, "").toLowerCase().trim();
@@ -45167,14 +45186,22 @@ Example:
       await ctx.reply("Anda bukan sebahagian daripada match ini.");
       return;
     }
+    pendingRejectReasons.set(telegramId, { matchId, proofOwnerId });
+    await User.updateOne({ telegramId }, { state: "awaiting_reject_reason" });
+    console.log(`[REJECT_REASON_REQUESTED] telegramId=${telegramId} matchId=${matchId} proofOwnerId=${proofOwnerId}`);
+    await ctx.reply(
+      "Why are you rejecting this proof? \u{1F440}\n\nPlease type a short reason below \u270D\uFE0F\n\nExamples:\n\u2022 Wrong screenshot\n\u2022 Didn't cut yet\n\u2022 Fake proof\n\u2022 Username not matching\n\u2022 Screenshot unclear"
+    );
+  });
+  async function finalizeRejectProof(bot2, rejecterChatId, telegramId, matchId, proofOwnerId, rejectReason) {
     const match = await Match.findOneAndUpdate(
       { _id: matchId, status: "active" },
       { status: "cancelled" },
       { new: false }
     );
     if (!match) {
-      console.log(`[DUPLICATE_CALLBACK_BLOCKED] reject_proof \u2014 telegramId=${telegramId} matchId=${matchId} \u2014 already cancelled.`);
-      await ctx.reply("\u26A0\uFE0F Action already processed.");
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] finalizeRejectProof \u2014 telegramId=${telegramId} matchId=${matchId} \u2014 already cancelled.`);
+      await bot2.telegram.sendMessage(rejecterChatId, "\u26A0\uFE0F This match was already resolved.");
       return;
     }
     const timerId = match._id.toString();
@@ -45201,7 +45228,7 @@ Example:
       { state: "idle", isWaiting: false, queuedAt: null, pendingLink: null, cancelCooldownUntil: cooldownUntil, activeMatchId: null }
     );
     await Queue.deleteOne({ telegramId: proofOwnerId });
-    console.log(`[PROOF_REJECTED] telegramId=${telegramId} rejected proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
+    console.log(`[PROOF_REJECTED_WITH_REASON] telegramId=${telegramId} rejected proof of telegramId=${proofOwnerId} for matchId=${matchId} reason="${rejectReason}".`);
     console.log(`[USER_COOLDOWN_24H] telegramId=${proofOwnerId} placed on 24h cooldown until ${cooldownUntil.toISOString()} due to proof rejection.`);
     {
       const rejectNow = /* @__PURE__ */ new Date();
@@ -45228,7 +45255,7 @@ Example:
         console.log(`[USER_AUTO_BANNED] telegramId=${proofOwnerId} auto-banned after ${totalRejects} total rejected proofs.`);
         for (const adminId of getAdminIds()) {
           try {
-            await bot.telegram.sendMessage(
+            await bot2.telegram.sendMessage(
               adminId,
               `\u{1F6AB} *Auto-ban triggered.*
 
@@ -45243,7 +45270,7 @@ Example:
         console.log(`[USER_FLAGGED] telegramId=${proofOwnerId} flagged after ${newWeeklyCount} rejected proofs within 7 days.`);
         for (const adminId of getAdminIds()) {
           try {
-            await bot.telegram.sendMessage(
+            await bot2.telegram.sendMessage(
               adminId,
               `\u{1F6A8} *User flagged for repeated rejected proof submissions.*
 
@@ -45257,14 +45284,21 @@ Weekly rejects: *${newWeeklyCount}* | Total rejects: *${totalRejects}*`,
       }
     }
     try {
-      await bot.telegram.sendMessage(
+      await bot2.telegram.sendMessage(
         proofOwnerId,
-        "\u274C *Bukti anda ditolak oleh partner.*\n\nAkaun anda dikenakan cooldown selama 24 jam kerana gagal melengkapkan swap dengan betul.",
-        { parse_mode: "Markdown" }
+        `\u274C Your proof was rejected by your cut buddy \u{1F635}\u200D\u{1F4AB}
+
+Reason:
+"${rejectReason}"
+
+\u26A0\uFE0F Strike applied:
+\u2022 1st \u2192 24h ban \u{1F6AB}
+\u2022 2nd \u2192 24h ban \u{1F6AB}
+\u2022 3rd \u2192 permanent ban \u{1F480}`
       );
     } catch {
     }
-    await ctx.reply("\u2705 *Match dibatalkan.*\nTerima kasih kerana membantu menjaga sistem CutSquad.", { parse_mode: "Markdown" });
+    await bot2.telegram.sendMessage(rejecterChatId, "\u2705 *Match dibatalkan.*\nTerima kasih kerana membantu menjaga sistem CutSquad.", { parse_mode: "Markdown" });
     try {
       const [rejectedUser, rejectorUser] = await Promise.all([
         User.findOne({ telegramId: proofOwnerId }).select("telegramUsername tiktokUsername"),
@@ -45292,14 +45326,17 @@ Rejected By:
 \u2022 TikTok: @${rejectorUser?.tiktokUsername || "N/A"}
 \u2022 ID: ${telegramId}
 
+Reason:
+${rejectReason}
+
 \u2022 Action: 24h cooldown applied
 \u2022 Time: ${mytime} MYT
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 Proof was rejected by partner. User has been restricted for 24 hours \u{1F6AB}`;
       for (const adminId of getAdminIds()) {
         try {
-          await bot.telegram.sendMessage(adminId, adminMsg);
-          console.log(`[ADMIN_PROOF_REJECTED_NOTIFIED] matchId=${matchId} proofOwner=${proofOwnerId} rejector=${telegramId} notified adminId=${adminId}`);
+          await bot2.telegram.sendMessage(adminId, adminMsg);
+          console.log(`[ADMIN_PROOF_REJECTED_NOTIFIED] matchId=${matchId} proofOwner=${proofOwnerId} rejector=${telegramId} reason="${rejectReason}" notified adminId=${adminId}`);
         } catch (err) {
           console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED] matchId=${matchId} proof-rejected adminId=${adminId}: ${err.message}`);
         }
@@ -45310,11 +45347,11 @@ Proof was rejected by partner. User has been restricted for 24 hours \u{1F6AB}`;
     const rejecter = await User.findOne({ telegramId }).select("pendingLink");
     const rejecterLink = rejecter?.pendingLink ?? (match.user1Id === telegramId ? match.link1 : match.link2);
     if (rejecterLink) {
-      await requeueUser(bot, telegramId, rejecterLink);
+      await requeueUser(bot2, telegramId, rejecterLink);
     } else {
       await User.updateOne({ telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null });
     }
-  });
+  }
   bot.action("cut_more", async (ctx) => {
     await ctx.answerCbQuery();
     const telegramId = ctx.from.id;
