@@ -221,18 +221,22 @@ export function scheduleDailyMidnightReset(bot: Telegraf): void {
   console.log("[DAILY_MIDNIGHT_CUT_RESET_MYT] Scheduler registered: daily cut reset at 00:00 Asia/Kuala_Lumpur (MYT).");
 }
 
-async function notifyQueueUsers(
+// Track last broadcast counts for /debug_broadcast
+const lastBroadcastStats = { total: 0, eligible: 0, sent: 0, skippedSelf: 0, skippedBanned: 0, skippedCooldown: 0, senderTikTok: "", ts: 0 };
+
+async function broadcastCutLinkNotification(
   bot: Telegraf,
-  newUserTikTok: string,
-  newUserTelegramId: number,
+  senderTikTok: string,
+  senderTelegramId: number,
 ): Promise<void> {
+  console.log(`[CUSTOMER_BROADCAST_FUNCTION_CALLED] senderTikTok=@${senderTikTok} senderTelegramId=${senderTelegramId}`);
+
   const now = new Date();
-
-  console.log(`[CUSTOMER_BROADCAST_ALL_STARTED] Sender=@${newUserTikTok} (telegramId=${newUserTelegramId}) submitted cut link — broadcasting to all registered users.`);
-
   const allUsers = await User.find({
     tiktokUsername: { $nin: ["__pending__", ""] },
   }).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
+
+  console.log(`[CUSTOMER_BROADCAST_TOTAL_USERS_FOUND] count=${allUsers.length} sender=@${senderTikTok}`);
 
   let sentCount = 0;
   let skippedSelf = 0;
@@ -240,46 +244,40 @@ async function notifyQueueUsers(
   let skippedCooldown = 0;
 
   for (const u of allUsers) {
-    // 1. Skip sender themselves
-    if (u.telegramId === newUserTelegramId) {
-      console.log(`[CUSTOMER_BROADCAST_ALL_SKIPPED_SELF] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
-      skippedSelf++;
-      continue;
-    }
-
-    // 2. Skip banned users
-    if (u.isBanned) {
-      console.log(`[CUSTOMER_BROADCAST_ALL_SKIPPED_BANNED] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
-      skippedBanned++;
-      continue;
-    }
-
-    // 3. Skip users on cooldown (suspended or cancel cooldown)
-    const onSuspend = u.suspendedUntil && u.suspendedUntil > now;
-    const onCancelCooldown = u.cancelCooldownUntil && u.cancelCooldownUntil > now;
-    if (onSuspend || onCancelCooldown) {
-      console.log(`[CUSTOMER_BROADCAST_ALL_SKIPPED_COOLDOWN] telegramId=${u.telegramId} (@${u.tiktokUsername}) — suspend=${!!onSuspend} cancelCooldown=${!!onCancelCooldown}`);
-      skippedCooldown++;
-      continue;
-    }
+    if (u.telegramId === senderTelegramId) { skippedSelf++; continue; }
+    if (u.isBanned) { skippedBanned++; continue; }
+    const onCooldown = (u.suspendedUntil && u.suspendedUntil > now) || (u.cancelCooldownUntil && u.cancelCooldownUntil > now);
+    if (onCooldown) { skippedCooldown++; continue; }
 
     try {
       await bot.telegram.sendMessage(
         u.telegramId,
-        `🔔 Someone new just dropped their cut link\\! 👀✨\n\nTikTok username:\n@${newUserTikTok}`,
+        `🔔 Someone new just dropped their cut link\\! 👀✨\n\nTikTok username:\n@${senderTikTok}`,
         { parse_mode: "Markdown" },
       );
       sentCount++;
-      console.log(`[CUSTOMER_BROADCAST_ALL_SENT] telegramId=${u.telegramId} (@${u.tiktokUsername}) notified about sender=@${newUserTikTok}`);
+      console.log(`[CUSTOMER_BROADCAST_SENT_TO_USER] telegramId=${u.telegramId} (@${u.tiktokUsername}) notified about sender=@${senderTikTok}`);
     } catch (err) {
-      console.error(`[CUSTOMER_BROADCAST_ALL_SEND_FAILED] telegramId=${u.telegramId}: ${(err as Error).message}`);
+      console.error(`[CUSTOMER_BROADCAST_SEND_FAILED] telegramId=${u.telegramId} (@${u.tiktokUsername}): ${(err as Error).message}`);
     }
   }
 
-  console.log(
-    `[CUSTOMER_BROADCAST_ALL_FINISHED] sender=@${newUserTikTok} — sent=${sentCount} skipped_self=${skippedSelf} skipped_banned=${skippedBanned} skipped_cooldown=${skippedCooldown} total=${allUsers.length}`,
-  );
+  const eligible = allUsers.length - skippedSelf - skippedBanned - skippedCooldown;
+  console.log(`[CUSTOMER_BROADCAST_FINISHED] sender=@${senderTikTok} total=${allUsers.length} eligible=${eligible} sent=${sentCount} skipped_self=${skippedSelf} skipped_banned=${skippedBanned} skipped_cooldown=${skippedCooldown}`);
+
+  // Update debug stats
+  lastBroadcastStats.total = allUsers.length;
+  lastBroadcastStats.eligible = eligible;
+  lastBroadcastStats.sent = sentCount;
+  lastBroadcastStats.skippedSelf = skippedSelf;
+  lastBroadcastStats.skippedBanned = skippedBanned;
+  lastBroadcastStats.skippedCooldown = skippedCooldown;
+  lastBroadcastStats.senderTikTok = senderTikTok;
+  lastBroadcastStats.ts = Date.now();
 }
+
+// Keep old name as alias so no other call site breaks
+const notifyQueueUsers = broadcastCutLinkNotification;
 
 async function checkSuspension(telegramId: number): Promise<{ suspended: boolean; message: string }> {
   const user = await User.findOne({ telegramId });
@@ -1232,6 +1230,51 @@ export function createBot(): Telegraf {
     await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
   });
 
+  bot.command("debug_broadcast", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) { await ctx.reply("🚫 Unauthorized."); return; }
+
+    const now = new Date();
+    const allUsers = await User.find({
+      tiktokUsername: { $nin: ["__pending__", ""] },
+    }).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
+
+    let eligible = 0;
+    let skippedBanned = 0;
+    let skippedCooldown = 0;
+
+    for (const u of allUsers) {
+      if (u.isBanned) { skippedBanned++; continue; }
+      const onCooldown = (u.suspendedUntil && u.suspendedUntil > now) || (u.cancelCooldownUntil && u.cancelCooldownUntil > now);
+      if (onCooldown) { skippedCooldown++; continue; }
+      eligible++;
+    }
+
+    const lastTs = lastBroadcastStats.ts
+      ? new Date(lastBroadcastStats.ts).toLocaleString("en-MY", { timeZone: "Asia/Kuala_Lumpur", hour12: false })
+      : "Never";
+
+    const msg =
+      `📊 *Broadcast Debug*\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `*Current registered users:* ${allUsers.length}\n` +
+      `*Eligible (not banned/cooldown):* ${eligible}\n` +
+      `*Skipped — banned:* ${skippedBanned}\n` +
+      `*Skipped — cooldown:* ${skippedCooldown}\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `*Last broadcast:*\n` +
+      `• Sender: @${lastBroadcastStats.senderTikTok || "N/A"}\n` +
+      `• Total users: ${lastBroadcastStats.total}\n` +
+      `• Eligible: ${lastBroadcastStats.eligible}\n` +
+      `• Sent: ${lastBroadcastStats.sent}\n` +
+      `• Skipped self: ${lastBroadcastStats.skippedSelf}\n` +
+      `• Skipped banned: ${lastBroadcastStats.skippedBanned}\n` +
+      `• Skipped cooldown: ${lastBroadcastStats.skippedCooldown}\n` +
+      `• Time: ${lastTs} MYT`;
+
+    console.log(`[DEBUG_BROADCAST] Admin telegramId=${ctx.from.id} checked broadcast stats. totalUsers=${allUsers.length} eligible=${eligible}`);
+    await ctx.reply(msg, { parse_mode: "Markdown" });
+  });
+
   bot.command("reset_user", async (ctx) => {
     const adminIds = (process.env["ADMIN_IDS"] ?? "")
       .split(",")
@@ -1841,9 +1884,6 @@ export function createBot(): Telegraf {
 
       await ctx.reply("Locked in! 🔒 Hunting for your next cut buddy… ✨\n\n_(You're in the queue right now — matching you with someone active 👀)_", { parse_mode: "Markdown" });
 
-      // Broadcast to all registered users every time a valid cut link is submitted
-      await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
-
       // Try atomic match first — if no partner, enter queue
       const immediatelyMatched = await tryMatchAtomic(bot, telegramId, text);
       if (!immediatelyMatched) {
@@ -1882,6 +1922,13 @@ export function createBot(): Telegraf {
         } catch (err) {
           console.error(`[ADMIN_LINK_SUBMIT_NOTIFY_FAILED] telegramId=${telegramId} — failed to notify adminId=${adminId}: ${(err as Error).message}`);
         }
+      }
+
+      // Customer broadcast — fire after admin notification, fully isolated
+      try {
+        await broadcastCutLinkNotification(bot, user.tiktokUsername, telegramId);
+      } catch (err) {
+        console.error(`[CUSTOMER_BROADCAST_ERROR] telegramId=${telegramId} (@${user.tiktokUsername}): ${(err as Error).message}`);
       }
 
       return;

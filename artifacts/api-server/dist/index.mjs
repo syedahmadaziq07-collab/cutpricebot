@@ -43213,31 +43213,29 @@ function scheduleDailyMidnightReset(bot) {
   }, { timezone: "Asia/Kuala_Lumpur" });
   console.log("[DAILY_MIDNIGHT_CUT_RESET_MYT] Scheduler registered: daily cut reset at 00:00 Asia/Kuala_Lumpur (MYT).");
 }
-async function notifyQueueUsers(bot, newUserTikTok, newUserTelegramId) {
+var lastBroadcastStats = { total: 0, eligible: 0, sent: 0, skippedSelf: 0, skippedBanned: 0, skippedCooldown: 0, senderTikTok: "", ts: 0 };
+async function broadcastCutLinkNotification(bot, senderTikTok, senderTelegramId) {
+  console.log(`[CUSTOMER_BROADCAST_FUNCTION_CALLED] senderTikTok=@${senderTikTok} senderTelegramId=${senderTelegramId}`);
   const now = /* @__PURE__ */ new Date();
-  console.log(`[CUSTOMER_BROADCAST_ALL_STARTED] Sender=@${newUserTikTok} (telegramId=${newUserTelegramId}) submitted cut link \u2014 broadcasting to all registered users.`);
   const allUsers = await User.find({
     tiktokUsername: { $nin: ["__pending__", ""] }
   }).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
+  console.log(`[CUSTOMER_BROADCAST_TOTAL_USERS_FOUND] count=${allUsers.length} sender=@${senderTikTok}`);
   let sentCount = 0;
   let skippedSelf = 0;
   let skippedBanned = 0;
   let skippedCooldown = 0;
   for (const u of allUsers) {
-    if (u.telegramId === newUserTelegramId) {
-      console.log(`[CUSTOMER_BROADCAST_ALL_SKIPPED_SELF] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
+    if (u.telegramId === senderTelegramId) {
       skippedSelf++;
       continue;
     }
     if (u.isBanned) {
-      console.log(`[CUSTOMER_BROADCAST_ALL_SKIPPED_BANNED] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
       skippedBanned++;
       continue;
     }
-    const onSuspend = u.suspendedUntil && u.suspendedUntil > now;
-    const onCancelCooldown = u.cancelCooldownUntil && u.cancelCooldownUntil > now;
-    if (onSuspend || onCancelCooldown) {
-      console.log(`[CUSTOMER_BROADCAST_ALL_SKIPPED_COOLDOWN] telegramId=${u.telegramId} (@${u.tiktokUsername}) \u2014 suspend=${!!onSuspend} cancelCooldown=${!!onCancelCooldown}`);
+    const onCooldown = u.suspendedUntil && u.suspendedUntil > now || u.cancelCooldownUntil && u.cancelCooldownUntil > now;
+    if (onCooldown) {
       skippedCooldown++;
       continue;
     }
@@ -43247,18 +43245,25 @@ async function notifyQueueUsers(bot, newUserTikTok, newUserTelegramId) {
         `\u{1F514} Someone new just dropped their cut link\\! \u{1F440}\u2728
 
 TikTok username:
-@${newUserTikTok}`,
+@${senderTikTok}`,
         { parse_mode: "Markdown" }
       );
       sentCount++;
-      console.log(`[CUSTOMER_BROADCAST_ALL_SENT] telegramId=${u.telegramId} (@${u.tiktokUsername}) notified about sender=@${newUserTikTok}`);
+      console.log(`[CUSTOMER_BROADCAST_SENT_TO_USER] telegramId=${u.telegramId} (@${u.tiktokUsername}) notified about sender=@${senderTikTok}`);
     } catch (err) {
-      console.error(`[CUSTOMER_BROADCAST_ALL_SEND_FAILED] telegramId=${u.telegramId}: ${err.message}`);
+      console.error(`[CUSTOMER_BROADCAST_SEND_FAILED] telegramId=${u.telegramId} (@${u.tiktokUsername}): ${err.message}`);
     }
   }
-  console.log(
-    `[CUSTOMER_BROADCAST_ALL_FINISHED] sender=@${newUserTikTok} \u2014 sent=${sentCount} skipped_self=${skippedSelf} skipped_banned=${skippedBanned} skipped_cooldown=${skippedCooldown} total=${allUsers.length}`
-  );
+  const eligible = allUsers.length - skippedSelf - skippedBanned - skippedCooldown;
+  console.log(`[CUSTOMER_BROADCAST_FINISHED] sender=@${senderTikTok} total=${allUsers.length} eligible=${eligible} sent=${sentCount} skipped_self=${skippedSelf} skipped_banned=${skippedBanned} skipped_cooldown=${skippedCooldown}`);
+  lastBroadcastStats.total = allUsers.length;
+  lastBroadcastStats.eligible = eligible;
+  lastBroadcastStats.sent = sentCount;
+  lastBroadcastStats.skippedSelf = skippedSelf;
+  lastBroadcastStats.skippedBanned = skippedBanned;
+  lastBroadcastStats.skippedCooldown = skippedCooldown;
+  lastBroadcastStats.senderTikTok = senderTikTok;
+  lastBroadcastStats.ts = Date.now();
 }
 async function checkSuspension(telegramId) {
   const user = await User.findOne({ telegramId });
@@ -44117,6 +44122,50 @@ Candidates found: ${candidates.length}`);
     console.log(`[DEBUG_NOTIFICATIONS] Admin telegramId=${ctx.from.id} ran debug. Target=@${newUserTikTok} candidates=${candidates.length} willReceive=${willReceive.length} willSkip=${willSkip.length}`);
     await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
   });
+  bot.command("debug_broadcast", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const now = /* @__PURE__ */ new Date();
+    const allUsers = await User.find({
+      tiktokUsername: { $nin: ["__pending__", ""] }
+    }).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
+    let eligible = 0;
+    let skippedBanned = 0;
+    let skippedCooldown = 0;
+    for (const u of allUsers) {
+      if (u.isBanned) {
+        skippedBanned++;
+        continue;
+      }
+      const onCooldown = u.suspendedUntil && u.suspendedUntil > now || u.cancelCooldownUntil && u.cancelCooldownUntil > now;
+      if (onCooldown) {
+        skippedCooldown++;
+        continue;
+      }
+      eligible++;
+    }
+    const lastTs = lastBroadcastStats.ts ? new Date(lastBroadcastStats.ts).toLocaleString("en-MY", { timeZone: "Asia/Kuala_Lumpur", hour12: false }) : "Never";
+    const msg = `\u{1F4CA} *Broadcast Debug*
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+*Current registered users:* ${allUsers.length}
+*Eligible (not banned/cooldown):* ${eligible}
+*Skipped \u2014 banned:* ${skippedBanned}
+*Skipped \u2014 cooldown:* ${skippedCooldown}
+\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+*Last broadcast:*
+\u2022 Sender: @${lastBroadcastStats.senderTikTok || "N/A"}
+\u2022 Total users: ${lastBroadcastStats.total}
+\u2022 Eligible: ${lastBroadcastStats.eligible}
+\u2022 Sent: ${lastBroadcastStats.sent}
+\u2022 Skipped self: ${lastBroadcastStats.skippedSelf}
+\u2022 Skipped banned: ${lastBroadcastStats.skippedBanned}
+\u2022 Skipped cooldown: ${lastBroadcastStats.skippedCooldown}
+\u2022 Time: ${lastTs} MYT`;
+    console.log(`[DEBUG_BROADCAST] Admin telegramId=${ctx.from.id} checked broadcast stats. totalUsers=${allUsers.length} eligible=${eligible}`);
+    await ctx.reply(msg, { parse_mode: "Markdown" });
+  });
   bot.command("reset_user", async (ctx) => {
     const adminIds = (process.env["ADMIN_IDS"] ?? "").split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
     if (!adminIds.includes(ctx.from.id)) {
@@ -44717,7 +44766,6 @@ ${refLink}`,
   pendingLink (before)= ${user.pendingLink ? `"${user.pendingLink}"` : "NULL"}`
       );
       await ctx.reply("Locked in! \u{1F512} Hunting for your next cut buddy\u2026 \u2728\n\n_(You're in the queue right now \u2014 matching you with someone active \u{1F440})_", { parse_mode: "Markdown" });
-      await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
       const immediatelyMatched = await tryMatchAtomic(bot, telegramId, text);
       if (!immediatelyMatched) {
         await addToQueue(bot, telegramId, text);
@@ -44751,6 +44799,11 @@ ${refLink}`,
         } catch (err) {
           console.error(`[ADMIN_LINK_SUBMIT_NOTIFY_FAILED] telegramId=${telegramId} \u2014 failed to notify adminId=${adminId}: ${err.message}`);
         }
+      }
+      try {
+        await broadcastCutLinkNotification(bot, user.tiktokUsername, telegramId);
+      } catch (err) {
+        console.error(`[CUSTOMER_BROADCAST_ERROR] telegramId=${telegramId} (@${user.tiktokUsername}): ${err.message}`);
       }
       return;
     }
