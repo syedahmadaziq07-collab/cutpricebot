@@ -44415,6 +44415,201 @@ Candidates found: ${candidates.length}`);
     }
     await ctx.reply(`\u2705 *@${user.tiktokUsername}* (${targetId}) has been unbanned.`, { parse_mode: "Markdown" });
   });
+  bot.command("block", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    if (args.length === 0) {
+      await ctx.reply("\u2139\uFE0F Usage: `/block USER_ID`", { parse_mode: "Markdown" });
+      return;
+    }
+    const targetId = parseInt(args[0], 10);
+    if (isNaN(targetId)) {
+      await ctx.reply("\u274C Invalid USER_ID.");
+      return;
+    }
+    const user = await User.findOne({ telegramId: targetId });
+    if (!user) {
+      await ctx.reply(`\u274C User ${targetId} not found.`);
+      return;
+    }
+    try {
+      await User.updateOne({ telegramId: targetId }, { isBanned: true, state: "idle", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null });
+      await Queue.deleteOne({ telegramId: targetId });
+      const activeMatch = await Match.findOne({ $or: [{ user1Id: targetId }, { user2Id: targetId }], status: "active" });
+      if (activeMatch) {
+        await Match.updateOne({ _id: activeMatch._id }, { status: "cancelled" });
+        const timerId = activeMatch._id.toString();
+        const t = matchTimers.get(timerId);
+        if (t) {
+          clearTimeout(t);
+          matchTimers.delete(timerId);
+        }
+        const partnerId = activeMatch.user1Id === targetId ? activeMatch.user2Id : activeMatch.user1Id;
+        const partner = await User.findOne({ telegramId: partnerId });
+        try {
+          await bot.telegram.sendMessage(partnerId, "\u26A0\uFE0F *Partner anda telah di-ban oleh admin.*\nSistem sedang mencari partner baru untuk anda \u{1F91D}", { parse_mode: "Markdown" });
+        } catch {
+        }
+        if (partner?.pendingLink) {
+          await addToQueue(bot, partnerId, partner.pendingLink);
+        } else {
+          await User.updateOne({ telegramId: partnerId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+        }
+      }
+      console.log(`[ADMIN_USER_BLOCKED] telegramId=${targetId} (@${user.tiktokUsername}) blocked by admin telegramId=${ctx.from.id}.`);
+      try {
+        await bot.telegram.sendMessage(targetId, "\u{1F6AB} Your account has been permanently blocked by admin.");
+      } catch {
+      }
+      await ctx.reply(`\u2705 User has been permanently blocked.
+
+User ID: ${targetId}`);
+    } catch (err) {
+      console.error(`[ADMIN_MODERATION_FAILED] /block targetId=${targetId}: ${err.message}`);
+      await ctx.reply("\u274C Failed to block user. Check logs.");
+    }
+  });
+  bot.command("cooldown24", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    if (args.length === 0) {
+      await ctx.reply("\u2139\uFE0F Usage: `/cooldown24 USER_ID`", { parse_mode: "Markdown" });
+      return;
+    }
+    const targetId = parseInt(args[0], 10);
+    if (isNaN(targetId)) {
+      await ctx.reply("\u274C Invalid USER_ID.");
+      return;
+    }
+    const user = await User.findOne({ telegramId: targetId });
+    if (!user) {
+      await ctx.reply(`\u274C User ${targetId} not found.`);
+      return;
+    }
+    try {
+      const cooldownUntil = new Date(Date.now() + 24 * 60 * 60 * 1e3);
+      await User.updateOne(
+        { telegramId: targetId },
+        { cancelCooldownUntil: cooldownUntil, state: "idle", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null }
+      );
+      await Queue.deleteOne({ telegramId: targetId });
+      const activeMatch = await Match.findOne({ $or: [{ user1Id: targetId }, { user2Id: targetId }], status: "active" });
+      if (activeMatch) {
+        await Match.updateOne({ _id: activeMatch._id }, { status: "cancelled" });
+        const timerId = activeMatch._id.toString();
+        const t = matchTimers.get(timerId);
+        if (t) {
+          clearTimeout(t);
+          matchTimers.delete(timerId);
+        }
+        const partnerId = activeMatch.user1Id === targetId ? activeMatch.user2Id : activeMatch.user1Id;
+        const partner = await User.findOne({ telegramId: partnerId });
+        try {
+          await bot.telegram.sendMessage(partnerId, "\u26A0\uFE0F *Partner anda telah dikenakan cooldown oleh admin.*\nSistem sedang mencari partner baru untuk anda \u{1F91D}", { parse_mode: "Markdown" });
+        } catch {
+        }
+        if (partner?.pendingLink) {
+          await addToQueue(bot, partnerId, partner.pendingLink);
+        } else {
+          await User.updateOne({ telegramId: partnerId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null });
+        }
+      }
+      console.log(`[ADMIN_USER_COOLDOWN_24H] telegramId=${targetId} (@${user.tiktokUsername}) placed on 24h cooldown by admin telegramId=${ctx.from.id} until ${cooldownUntil.toISOString()}.`);
+      try {
+        await bot.telegram.sendMessage(targetId, "\u23F3 Your account has been placed on 24h cooldown by admin.");
+      } catch {
+      }
+      await ctx.reply(`\u2705 User has been placed on 24h cooldown.
+
+User ID: ${targetId}`);
+    } catch (err) {
+      console.error(`[ADMIN_MODERATION_FAILED] /cooldown24 targetId=${targetId}: ${err.message}`);
+      await ctx.reply("\u274C Failed to apply cooldown. Check logs.");
+    }
+  });
+  bot.command("unblock", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    if (args.length === 0) {
+      await ctx.reply("\u2139\uFE0F Usage: `/unblock USER_ID`", { parse_mode: "Markdown" });
+      return;
+    }
+    const targetId = parseInt(args[0], 10);
+    if (isNaN(targetId)) {
+      await ctx.reply("\u274C Invalid USER_ID.");
+      return;
+    }
+    const user = await User.findOne({ telegramId: targetId });
+    if (!user) {
+      await ctx.reply(`\u274C User ${targetId} not found.`);
+      return;
+    }
+    if (!user.isBanned) {
+      await ctx.reply(`\u26A0\uFE0F User ${targetId} is not currently blocked.`);
+      return;
+    }
+    try {
+      await User.updateOne({ telegramId: targetId }, { isBanned: false, isFlagged: false, state: "awaiting_cut_link" });
+      console.log(`[ADMIN_USER_UNBLOCKED] telegramId=${targetId} (@${user.tiktokUsername}) unblocked by admin telegramId=${ctx.from.id}.`);
+      try {
+        await bot.telegram.sendMessage(targetId, "\u2705 Your account has been unblocked by admin.");
+      } catch {
+      }
+      await ctx.reply(`\u2705 User has been unblocked successfully.
+
+User ID: ${targetId}`);
+    } catch (err) {
+      console.error(`[ADMIN_MODERATION_FAILED] /unblock targetId=${targetId}: ${err.message}`);
+      await ctx.reply("\u274C Failed to unblock user. Check logs.");
+    }
+  });
+  bot.command("uncooldown", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    if (args.length === 0) {
+      await ctx.reply("\u2139\uFE0F Usage: `/uncooldown USER_ID`", { parse_mode: "Markdown" });
+      return;
+    }
+    const targetId = parseInt(args[0], 10);
+    if (isNaN(targetId)) {
+      await ctx.reply("\u274C Invalid USER_ID.");
+      return;
+    }
+    const user = await User.findOne({ telegramId: targetId });
+    if (!user) {
+      await ctx.reply(`\u274C User ${targetId} not found.`);
+      return;
+    }
+    try {
+      await User.updateOne(
+        { telegramId: targetId },
+        { $unset: { cancelCooldownUntil: "", suspendedUntil: "" } }
+      );
+      console.log(`[ADMIN_USER_UNCOOLDOWNED] telegramId=${targetId} (@${user.tiktokUsername}) cooldown cleared by admin telegramId=${ctx.from.id}.`);
+      try {
+        await bot.telegram.sendMessage(targetId, "\u2705 Your cooldown has been removed by admin.");
+      } catch {
+      }
+      await ctx.reply(`\u2705 User cooldown has been removed.
+
+User ID: ${targetId}`);
+    } catch (err) {
+      console.error(`[ADMIN_MODERATION_FAILED] /uncooldown targetId=${targetId}: ${err.message}`);
+      await ctx.reply("\u274C Failed to remove cooldown. Check logs.");
+    }
+  });
   bot.command("userstats", async (ctx) => {
     if (!getAdminIds().includes(ctx.from.id)) {
       await ctx.reply("\u{1F6AB} Unauthorized.");

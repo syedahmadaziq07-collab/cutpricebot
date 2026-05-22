@@ -1,0 +1,124 @@
+Add admin moderation commands for permanent ban, 24h cooldown, unban, and uncooldown.
+
+IMPORTANT:
+Do NOT change matchmaking logic.
+Do NOT change proof flow.
+Do NOT change referral logic.
+Only add/admin-fix moderation commands.
+
+━━━━━━━━━━━━━━━━━━
+NEW ADMIN COMMANDS
+━━━━━━━━━━━━━━━━━━
+
+1. Permanent ban user:
+
+/block USER_ID
+
+Example:
+/block 5363369071
+
+Action:
+- set isBanned = true
+- remove user from queue
+- cancel active match if any
+- prevent user from using bot
+
+Admin reply:
+✅ User has been permanently blocked.
+
+User ID: {userId}
+
+User message:
+🚫 Your account has been permanently blocked by admin.
+
+━━━━━━━━━━━━━━━━━━
+
+2. Give 24h cooldown:
+
+/cooldown24 USER_ID
+
+Example:
+/cooldown24 5363369071
+
+Action:
+- set cooldownUntil = now + 24 hours
+- remove user from queue
+- cancel active match if any
+- prevent user from matching until cooldown ends
+
+Admin reply:
+✅ User has been placed on 24h cooldown.
+
+User ID: {userId}
+
+User message:
+⏳ Your account has been placed on 24h cooldown by admin.
+
+━━━━━━━━━━━━━━━━━━
+
+3. Unblock permanent ban:
+
+/unblock USER_ID
+
+Example:
+/unblock 5363369071
+
+Action:
+- set isBanned = false
+
+Admin reply:
+✅ User has been unblocked successfully.
+
+User ID: {userId}
+
+User message:
+✅ Your account has been unblocked by admin.
+
+━━━━━━━━━━━━━━━━━━
+
+4. Remove cooldown:
+
+/uncooldown USER_ID
+
+Example:
+/uncooldown 5363369071
+
+Action:
+- clear cooldownUntil
+- clear cancelCooldownUntil if exists
+- clear suspendedUntil if exists
+
+Admin reply:
+✅ User cooldown has been removed.
+
+User ID: {userId}
+
+User message:
+✅ Your cooldown has been removed by admin.
+
+━━━━━━━━━━━━━━━━━━
+PERMISSION
+━━━━━━━━━━━━━━━━━━
+
+- Admin only
+- Use existing admin ID system
+- Non-admin users must be blocked silently or replied with unauthorized message
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add logs:
+- ADMIN_USER_BLOCKED
+- ADMIN_USER_COOLDOWN_24H
+- ADMIN_USER_UNBLOCKED
+- ADMIN_USER_UNCOOLDOWNED
+- ADMIN_MODERATION_FAILED
+
+━━━━━━━━━━━━━━━━━━
+BUILD
+━━━━━━━━━━━━━━━━━━
+
+Build project.
+Verify TypeScript errors.
+Commit and push GitHub main.
