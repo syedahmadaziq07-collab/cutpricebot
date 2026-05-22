@@ -43848,8 +43848,8 @@ function createBot() {
       const updatedTime = now.toUTCString().replace("GMT", "UTC");
       const registeredUserCount = await User.countDocuments();
       console.log(`[REGISTERED_USER_COUNT_FETCHED] count=${registeredUserCount}`);
-      const displayCount = registeredUserCount + 9;
-      console.log(`[TOTAL_ACTIVE_RENDERED] displayCount=${displayCount} (registeredUsers=${registeredUserCount} + offset=9)`);
+      const displayCount = registeredUserCount * 5;
+      console.log(`[TOTAL_ACTIVE_SOCIAL_PROOF_RENDERED] displayCount=${displayCount} (totalUsers=${registeredUserCount} * 5)`);
       const me = await bot.telegram.getMe();
       const refLink = `https://t.me/${me.username}?start=ref_${existingUser.referralCode}`;
       await ctx.reply(
