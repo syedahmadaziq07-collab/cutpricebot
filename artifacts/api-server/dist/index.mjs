@@ -43243,6 +43243,103 @@ function scheduleDailyMidnightReset(bot) {
   }, { timezone: "Asia/Kuala_Lumpur" });
   console.log("[DAILY_MIDNIGHT_CUT_RESET_MYT] Scheduler registered: daily cut reset at 00:00 Asia/Kuala_Lumpur (MYT).");
 }
+var STUCK_STATES = [
+  "inqueue",
+  "in_match",
+  "awaiting_proof_account_selection",
+  "awaiting_proof_cut_username",
+  "awaiting_proof",
+  "awaiting_reject_reason"
+];
+var STUCK_THRESHOLD_MS = 30 * 60 * 1e3;
+async function performStuckCleanup(bot) {
+  const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS);
+  console.log(`[STUCK_CLEANUP_STARTED] cutoff=${cutoff.toISOString()}`);
+  let clearedMatches = 0;
+  let clearedQueue = 0;
+  let clearedProof = 0;
+  const proofStates = /* @__PURE__ */ new Set([
+    "awaiting_proof_account_selection",
+    "awaiting_proof_cut_username",
+    "awaiting_proof",
+    "awaiting_reject_reason"
+  ]);
+  const stuckUsers = await User.find({
+    state: { $in: STUCK_STATES },
+    updatedAt: { $lt: cutoff }
+  });
+  for (const user of stuckUsers) {
+    const { telegramId, state, activeMatchId } = user;
+    if (activeMatchId) {
+      const activeMatch = await Match.findOne({ _id: activeMatchId, status: "active" });
+      if (activeMatch) {
+        await Match.updateOne({ _id: activeMatch._id }, { status: "cancelled" });
+        const timerId = activeMatch._id.toString();
+        const existingTimer = matchTimers.get(timerId);
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+          matchTimers.delete(timerId);
+        }
+        for (const uid of [activeMatch.user1Id, activeMatch.user2Id]) {
+          const ptKey = `proof:${timerId}:${uid}`;
+          const pt = proofTimers.get(ptKey);
+          if (pt) {
+            clearTimeout(pt);
+            proofTimers.delete(ptKey);
+          }
+          const rptKey = `proof_reminder:${timerId}:${uid}`;
+          const rpt = proofReminderTimers.get(rptKey);
+          if (rpt) {
+            clearTimeout(rpt);
+            proofReminderTimers.delete(rptKey);
+          }
+        }
+        clearedMatches++;
+        console.log(`[STUCK_MATCH_CLEARED] matchId=${timerId} telegramId=${telegramId} state=${state}`);
+      }
+    }
+    const queueResult = await Queue.deleteOne({ telegramId });
+    if (queueResult.deletedCount > 0) {
+      clearedQueue++;
+      console.log(`[STUCK_QUEUE_CLEARED] telegramId=${telegramId}`);
+    }
+    if (proofStates.has(state)) {
+      clearedProof++;
+      console.log(`[STUCK_PROOF_STATE_CLEARED] telegramId=${telegramId} state=${state}`);
+    }
+    await User.updateOne(
+      { telegramId },
+      {
+        state: "awaiting_cut_link",
+        isWaiting: false,
+        queuedAt: null,
+        activeMatchId: null,
+        proofCutByUsername: null
+      }
+    );
+    try {
+      await bot.telegram.sendMessage(
+        telegramId,
+        "\u23F0 Your previous session expired because it was inactive for too long.\n\nNo worries \u2014 you can submit a new cut link anytime \u{1F440}\u2728"
+      );
+    } catch {
+    }
+  }
+  console.log(`[STUCK_CLEANUP_FINISHED] clearedMatches=${clearedMatches} clearedQueue=${clearedQueue} clearedProof=${clearedProof} totalUsers=${stuckUsers.length}`);
+  return { clearedMatches, clearedQueue, clearedProof };
+}
+function scheduleStuckCleanup(bot) {
+  (0, import_node_cron.schedule)("*/30 * * * *", async () => {
+    const now = /* @__PURE__ */ new Date();
+    console.log(`[STUCK_CLEANUP_AUTO] Auto stuck cleanup triggered at ${now.toISOString()}`);
+    try {
+      await performStuckCleanup(bot);
+    } catch (err) {
+      console.error(`[STUCK_CLEANUP_AUTO_FAILED] ${err.message}`);
+    }
+  });
+  console.log("[STUCK_CLEANUP_AUTO] Scheduler registered: stuck cleanup every 30 minutes.");
+}
 var lastBroadcastStats = {
   total: 0,
   eligible: 0,
@@ -44779,6 +44876,26 @@ Status: ${statusMap[user.state] ?? user.state}`,
       { parse_mode: "Markdown" }
     );
   });
+  bot.command("clear_stuck_matches", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) {
+      await ctx.reply("\u{1F6AB} Unauthorized.");
+      return;
+    }
+    await ctx.reply("\u{1F504} Running stuck cleanup...");
+    try {
+      const { clearedMatches, clearedQueue, clearedProof } = await performStuckCleanup(bot);
+      await ctx.reply(
+        `\u2705 Stuck cleanup completed.
+
+Cleared matches: ${clearedMatches}
+Cleared queue users: ${clearedQueue}
+Cleared proof states: ${clearedProof}`
+      );
+    } catch (err) {
+      console.error(`[STUCK_CLEANUP_ADMIN_FAILED] ${err.message}`);
+      await ctx.reply(`\u274C Cleanup failed: ${err.message}`);
+    }
+  });
   bot.on((0, import_filters.message)("photo"), async (ctx) => {
     const telegramId = ctx.from.id;
     console.log(`[MSG] photo from telegramId=${telegramId}`);
@@ -45660,6 +45777,7 @@ async function main() {
   console.log("[STARTUP] Stale queue cleanup complete.");
   const bot = createBot();
   scheduleDailyMidnightReset(bot);
+  scheduleStuckCleanup(bot);
   console.log("Clearing any existing Telegram webhook...");
   await bot.telegram.deleteWebhook({ drop_pending_updates: false });
   console.log("Webhook cleared. Starting polling...");

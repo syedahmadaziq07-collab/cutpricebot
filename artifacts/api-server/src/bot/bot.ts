@@ -264,6 +264,120 @@ export function scheduleDailyMidnightReset(bot: Telegraf): void {
   console.log("[DAILY_MIDNIGHT_CUT_RESET_MYT] Scheduler registered: daily cut reset at 00:00 Asia/Kuala_Lumpur (MYT).");
 }
 
+// ─── Stuck Session Cleanup ───────────────────────────────────────────────────
+
+const STUCK_STATES = [
+  "inqueue",
+  "in_match",
+  "awaiting_proof_account_selection",
+  "awaiting_proof_cut_username",
+  "awaiting_proof",
+  "awaiting_reject_reason",
+];
+const STUCK_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+
+async function performStuckCleanup(bot: Telegraf): Promise<{ clearedMatches: number; clearedQueue: number; clearedProof: number }> {
+  const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS);
+  console.log(`[STUCK_CLEANUP_STARTED] cutoff=${cutoff.toISOString()}`);
+
+  let clearedMatches = 0;
+  let clearedQueue = 0;
+  let clearedProof = 0;
+
+  const proofStates = new Set([
+    "awaiting_proof_account_selection",
+    "awaiting_proof_cut_username",
+    "awaiting_proof",
+    "awaiting_reject_reason",
+  ]);
+
+  const stuckUsers = await User.find({
+    state: { $in: STUCK_STATES },
+    updatedAt: { $lt: cutoff },
+  });
+
+  for (const user of stuckUsers) {
+    const { telegramId, state, activeMatchId } = user;
+
+    // Cancel active match if any
+    if (activeMatchId) {
+      const activeMatch = await Match.findOne({ _id: activeMatchId, status: "active" });
+      if (activeMatch) {
+        await Match.updateOne({ _id: activeMatch._id }, { status: "cancelled" });
+
+        const timerId = activeMatch._id.toString();
+        const existingTimer = matchTimers.get(timerId);
+        if (existingTimer) { clearTimeout(existingTimer); matchTimers.delete(timerId); }
+
+        for (const uid of [activeMatch.user1Id, activeMatch.user2Id]) {
+          const ptKey = `proof:${timerId}:${uid}`;
+          const pt = proofTimers.get(ptKey);
+          if (pt) { clearTimeout(pt); proofTimers.delete(ptKey); }
+          const rptKey = `proof_reminder:${timerId}:${uid}`;
+          const rpt = proofReminderTimers.get(rptKey);
+          if (rpt) { clearTimeout(rpt); proofReminderTimers.delete(rptKey); }
+        }
+
+        clearedMatches++;
+        console.log(`[STUCK_MATCH_CLEARED] matchId=${timerId} telegramId=${telegramId} state=${state}`);
+      }
+    }
+
+    // Remove from queue
+    const queueResult = await Queue.deleteOne({ telegramId });
+    if (queueResult.deletedCount > 0) {
+      clearedQueue++;
+      console.log(`[STUCK_QUEUE_CLEARED] telegramId=${telegramId}`);
+    }
+
+    // Track proof state clears
+    if (proofStates.has(state)) {
+      clearedProof++;
+      console.log(`[STUCK_PROOF_STATE_CLEARED] telegramId=${telegramId} state=${state}`);
+    }
+
+    // Reset user — preserve account, profile, cuts, bans, cooldowns
+    await User.updateOne(
+      { telegramId },
+      {
+        state: "awaiting_cut_link",
+        isWaiting: false,
+        queuedAt: null,
+        activeMatchId: null,
+        proofCutByUsername: null,
+      },
+    );
+
+    // Notify user
+    try {
+      await bot.telegram.sendMessage(
+        telegramId,
+        "⏰ Your previous session expired because it was inactive for too long.\n\nNo worries — you can submit a new cut link anytime 👀✨",
+      );
+    } catch { /* user may have blocked bot */ }
+  }
+
+  console.log(`[STUCK_CLEANUP_FINISHED] clearedMatches=${clearedMatches} clearedQueue=${clearedQueue} clearedProof=${clearedProof} totalUsers=${stuckUsers.length}`);
+
+  return { clearedMatches, clearedQueue, clearedProof };
+}
+
+export function scheduleStuckCleanup(bot: Telegraf): void {
+  // Runs every 30 minutes
+  schedule("*/30 * * * *", async () => {
+    const now = new Date();
+    console.log(`[STUCK_CLEANUP_AUTO] Auto stuck cleanup triggered at ${now.toISOString()}`);
+    try {
+      await performStuckCleanup(bot);
+    } catch (err) {
+      console.error(`[STUCK_CLEANUP_AUTO_FAILED] ${(err as Error).message}`);
+    }
+  });
+  console.log("[STUCK_CLEANUP_AUTO] Scheduler registered: stuck cleanup every 30 minutes.");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Track last broadcast counts for /debug_broadcast
 const lastBroadcastStats = {
   total: 0, eligible: 0, sent: 0, failed: 0,
@@ -1836,6 +1950,22 @@ export function createBot(): Telegraf {
       `📊 *Status kau:*\n\nTikTok: @${user.tiktokUsername}\nCut baki: ${user.cutBalance}\nStrikes: ${user.strikes}/3\nStatus: ${statusMap[user.state] ?? user.state}`,
       { parse_mode: "Markdown" },
     );
+  });
+
+  bot.command("clear_stuck_matches", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) { await ctx.reply("🚫 Unauthorized."); return; }
+
+    await ctx.reply("🔄 Running stuck cleanup...");
+
+    try {
+      const { clearedMatches, clearedQueue, clearedProof } = await performStuckCleanup(bot);
+      await ctx.reply(
+        `✅ Stuck cleanup completed.\n\nCleared matches: ${clearedMatches}\nCleared queue users: ${clearedQueue}\nCleared proof states: ${clearedProof}`,
+      );
+    } catch (err) {
+      console.error(`[STUCK_CLEANUP_ADMIN_FAILED] ${(err as Error).message}`);
+      await ctx.reply(`❌ Cleanup failed: ${(err as Error).message}`);
+    }
   });
 
   bot.on(message("photo"), async (ctx) => {
