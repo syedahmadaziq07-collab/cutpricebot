@@ -228,32 +228,29 @@ async function notifyQueueUsers(
 ): Promise<void> {
   const now = new Date();
 
-  console.log(`[CUSTOMER_BROADCAST_STARTED] Sender=@${newUserTikTok} (telegramId=${newUserTelegramId}) entered queue — starting broadcast to all registered users.`);
+  console.log(`[CUSTOMER_BROADCAST_ALL_STARTED] Sender=@${newUserTikTok} (telegramId=${newUserTelegramId}) submitted cut link — broadcasting to all registered users.`);
 
-  // Fetch all real registered users (including sender — skipped in loop below)
   const allUsers = await User.find({
     tiktokUsername: { $nin: ["__pending__", ""] },
-    isBanned: false,
-  }).select("telegramId tiktokUsername activeMatchId suspendedUntil cancelCooldownUntil");
+  }).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
 
   let sentCount = 0;
   let skippedSelf = 0;
-  let skippedActiveMatch = 0;
+  let skippedBanned = 0;
   let skippedCooldown = 0;
-  let skippedRecentPair = 0;
 
   for (const u of allUsers) {
     // 1. Skip sender themselves
     if (u.telegramId === newUserTelegramId) {
-      console.log(`[CUSTOMER_BROADCAST_SKIPPED_SELF] telegramId=${u.telegramId} (@${u.tiktokUsername}) — is the sender`);
+      console.log(`[CUSTOMER_BROADCAST_ALL_SKIPPED_SELF] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
       skippedSelf++;
       continue;
     }
 
-    // 2. Skip users currently in an active match
-    if (u.activeMatchId) {
-      console.log(`[CUSTOMER_BROADCAST_SKIPPED_ACTIVE_MATCH] telegramId=${u.telegramId} (@${u.tiktokUsername}) — currently in active match`);
-      skippedActiveMatch++;
+    // 2. Skip banned users
+    if (u.isBanned) {
+      console.log(`[CUSTOMER_BROADCAST_ALL_SKIPPED_BANNED] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
+      skippedBanned++;
       continue;
     }
 
@@ -261,16 +258,8 @@ async function notifyQueueUsers(
     const onSuspend = u.suspendedUntil && u.suspendedUntil > now;
     const onCancelCooldown = u.cancelCooldownUntil && u.cancelCooldownUntil > now;
     if (onSuspend || onCancelCooldown) {
-      console.log(`[CUSTOMER_BROADCAST_SKIPPED_COOLDOWN] telegramId=${u.telegramId} (@${u.tiktokUsername}) — on cooldown (suspend=${!!onSuspend} cancelCooldown=${!!onCancelCooldown})`);
+      console.log(`[CUSTOMER_BROADCAST_ALL_SKIPPED_COOLDOWN] telegramId=${u.telegramId} (@${u.tiktokUsername}) — suspend=${!!onSuspend} cancelCooldown=${!!onCancelCooldown}`);
       skippedCooldown++;
-      continue;
-    }
-
-    // 4. Skip users who matched with sender within last 24 h
-    const recent = await hasRecentMatch(u.telegramId, newUserTelegramId);
-    if (recent) {
-      console.log(`[CUSTOMER_BROADCAST_SKIPPED_RECENT_PAIR] telegramId=${u.telegramId} (@${u.tiktokUsername}) — matched with sender within 24h`);
-      skippedRecentPair++;
       continue;
     }
 
@@ -281,14 +270,14 @@ async function notifyQueueUsers(
         { parse_mode: "Markdown" },
       );
       sentCount++;
-      console.log(`[CUSTOMER_BROADCAST_SENT] telegramId=${u.telegramId} (@${u.tiktokUsername}) notified about sender=@${newUserTikTok}`);
+      console.log(`[CUSTOMER_BROADCAST_ALL_SENT] telegramId=${u.telegramId} (@${u.tiktokUsername}) notified about sender=@${newUserTikTok}`);
     } catch (err) {
-      console.error(`[CUSTOMER_BROADCAST_SEND_FAILED] telegramId=${u.telegramId}: ${(err as Error).message}`);
+      console.error(`[CUSTOMER_BROADCAST_ALL_SEND_FAILED] telegramId=${u.telegramId}: ${(err as Error).message}`);
     }
   }
 
   console.log(
-    `[CUSTOMER_BROADCAST_FINISHED] sender=@${newUserTikTok} — sent=${sentCount} skipped_self=${skippedSelf} skipped_active_match=${skippedActiveMatch} skipped_cooldown=${skippedCooldown} skipped_recent_pair=${skippedRecentPair} total=${allUsers.length}`,
+    `[CUSTOMER_BROADCAST_ALL_FINISHED] sender=@${newUserTikTok} — sent=${sentCount} skipped_self=${skippedSelf} skipped_banned=${skippedBanned} skipped_cooldown=${skippedCooldown} total=${allUsers.length}`,
   );
 }
 
@@ -1852,12 +1841,14 @@ export function createBot(): Telegraf {
 
       await ctx.reply("Locked in! 🔒 Hunting for your next cut buddy… ✨\n\n_(You're in the queue right now — matching you with someone active 👀)_", { parse_mode: "Markdown" });
 
-      // Try atomic match first — skip queue and notification if partner found immediately
+      // Broadcast to all registered users every time a valid cut link is submitted
+      await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
+
+      // Try atomic match first — if no partner, enter queue
       const immediatelyMatched = await tryMatchAtomic(bot, telegramId, text);
       if (!immediatelyMatched) {
-        // No partner available — enter queue and notify idle users
+        // No partner available — enter queue
         await addToQueue(bot, telegramId, text);
-        await notifyQueueUsers(bot, user.tiktokUsername, telegramId);
       }
 
       // Admin notification — sent every time a valid cut link is submitted
