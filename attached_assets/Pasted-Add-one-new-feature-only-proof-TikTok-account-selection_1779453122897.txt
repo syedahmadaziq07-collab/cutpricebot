@@ -1,0 +1,134 @@
+Add one new feature only: proof TikTok account selection before screenshot upload.
+
+IMPORTANT:
+Do NOT change existing matchmaking logic.
+Do NOT change queue logic.
+Do NOT change proof approve/reject logic.
+Do NOT change cooldown/ban logic.
+Do NOT change referral logic.
+Only add this new step before proof screenshot upload.
+
+━━━━━━━━━━━━━━━━━━
+NEW FLOW
+━━━━━━━━━━━━━━━━━━
+
+Current flow:
+User clicks ✅ Done Cut
+→ bot asks user to upload screenshot proof
+
+New flow:
+User clicks ✅ Done Cut
+→ bot asks which TikTok account they used to cut partner link
+→ after user selects/enters account
+→ bot asks user to upload screenshot proof
+
+━━━━━━━━━━━━━━━━━━
+MESSAGE
+━━━━━━━━━━━━━━━━━━
+
+When user clicks ✅ Done Cut, send:
+
+Hii 👀✨
+
+Which TikTok account did you use to cut your partner’s link?
+
+Example:
+@username
+
+Buttons:
+✅ Use registered account (@{locked_tiktok_username})
+✍️ Enter another username
+❌ Cancel
+
+━━━━━━━━━━━━━━━━━━
+BUTTON BEHAVIOR
+━━━━━━━━━━━━━━━━━━
+
+1. ✅ Use registered account
+- save proofCutByUsername = locked TikTok username
+- continue to screenshot upload step
+- ask:
+
+📸 Okieee now send a screenshot as proof that you’ve completed your partner’s cut ✨
+
+2. ✍️ Enter another username
+- set state = awaiting_proof_cut_username
+- ask user to type TikTok username used for cut
+- accept format:
+  @username
+  username
+- normalize:
+  remove @
+  lowercase
+  trim spaces
+
+After valid username entered:
+- save proofCutByUsername
+- continue to screenshot upload step
+- ask screenshot message
+
+3. ❌ Cancel
+- cancel this proof upload step only
+- keep match active
+- do not cancel the match
+- return user to match state
+
+━━━━━━━━━━━━━━━━━━
+WHEN SENDING PROOF TO PARTNER
+━━━━━━━━━━━━━━━━━━
+
+Include the account used:
+
+📸 Your cut buddy just sent their proof!
+
+Cut done using TikTok account:
+@{proofCutByUsername}
+
+Take a quick look below and make sure everything’s valid 👀✨
+
+Buttons remain:
+✅ Approve Proof
+❌ Reject Proof
+
+━━━━━━━━━━━━━━━━━━
+DATABASE / STATE
+━━━━━━━━━━━━━━━━━━
+
+Add field if needed:
+proofCutByUsername
+
+This field is only for proof verification.
+Do NOT change locked TikTok username.
+Do NOT update user’s registered TikTok username.
+
+━━━━━━━━━━━━━━━━━━
+VALIDATION
+━━━━━━━━━━━━━━━━━━
+
+If user enters invalid username, reply:
+
+Oops 😭
+
+Please send a valid TikTok username.
+
+Example:
+@username
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add logs:
+- PROOF_ACCOUNT_SELECTION_STARTED
+- PROOF_ACCOUNT_REGISTERED_SELECTED
+- PROOF_ACCOUNT_CUSTOM_ENTERED
+- PROOF_ACCOUNT_INVALID
+- PROOF_ACCOUNT_SAVED
+
+━━━━━━━━━━━━━━━━━━
+BUILD
+━━━━━━━━━━━━━━━━━━
+
+Build project after edits.
+Verify no TypeScript errors.
+Commit and push to GitHub main.

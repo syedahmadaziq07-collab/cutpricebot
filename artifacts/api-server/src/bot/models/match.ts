@@ -21,6 +21,9 @@ export interface IMatch extends Document {
   user2ProofApprovedByPartner: boolean;
   user2ProofMessageId: string | null;
   user2ProofSubmittedAt: Date | null;
+
+  user1ProofCutByUsername: string | null;
+  user2ProofCutByUsername: string | null;
 }
 
 const matchSchema = new mongoose.Schema<IMatch>(
@@ -47,6 +50,9 @@ const matchSchema = new mongoose.Schema<IMatch>(
     user2ProofApprovedByPartner: { type: Boolean, default: false },
     user2ProofMessageId: { type: String, default: null },
     user2ProofSubmittedAt: { type: Date, default: null },
+
+    user1ProofCutByUsername: { type: String, default: null },
+    user2ProofCutByUsername: { type: String, default: null },
   },
   { timestamps: true },
 );

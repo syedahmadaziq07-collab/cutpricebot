@@ -449,7 +449,7 @@ async function handleMatchExpiry(
   for (const uid of [user1Id, user2Id]) {
     const user = await User.findOne({ telegramId: uid });
     if (!user) continue;
-    const activeStates = ["in_match", "awaiting_proof", "awaiting_partner_approval"];
+    const activeStates = ["in_match", "awaiting_proof_account_selection", "awaiting_proof_cut_username", "awaiting_proof", "awaiting_partner_approval"];
     if (!activeStates.includes(user.state)) continue;
     // Clear any pending proof timer for this user in this match
     const proofTimerKey = `proof:${matchId}:${uid}`;
@@ -1598,6 +1598,8 @@ export function createBot(): Telegraf {
       awaiting_cut_link: "⏳ Tunggu link",
       inqueue: "🔍 Cari partner...",
       in_match: "🤝 In match",
+      awaiting_proof_account_selection: "🔍 Pilih akaun bukti",
+      awaiting_proof_cut_username: "✍️ Masukkan username",
       awaiting_proof: "📸 Menunggu bukti",
       awaiting_partner_approval: "⏳ Menunggu kelulusan partner",
     };
@@ -1624,6 +1626,16 @@ export function createBot(): Telegraf {
 
     if (user.state === "in_match") {
       await ctx.reply("Sila tekan butang *✅ Done Cut* dahulu sebelum menghantar bukti ya.", { parse_mode: "Markdown" });
+      return;
+    }
+
+    if (user.state === "awaiting_proof_account_selection") {
+      await ctx.reply("Sila pilih akaun TikTok yang anda gunakan dahulu 👆✨");
+      return;
+    }
+
+    if (user.state === "awaiting_proof_cut_username") {
+      await ctx.reply("Sila taip username TikTok yang anda gunakan dahulu ✍️");
       return;
     }
 
@@ -1668,12 +1680,16 @@ export function createBot(): Telegraf {
     const proofFileId = photo.file_id;
     const now = new Date();
 
+    const freshUser = await User.findOne({ telegramId }).select("proofCutByUsername");
+    const proofCutByUsername = freshUser?.proofCutByUsername ?? null;
+
     if (isUser1) {
       await Match.updateOne({ _id: match._id }, {
         user1ProofSubmitted: true,
         user1ProofMessageId: proofMessageId,
         user1ProofSubmittedAt: now,
         user1Confirmed: true,
+        user1ProofCutByUsername: proofCutByUsername,
       });
     } else {
       await Match.updateOne({ _id: match._id }, {
@@ -1681,11 +1697,12 @@ export function createBot(): Telegraf {
         user2ProofMessageId: proofMessageId,
         user2ProofSubmittedAt: now,
         user2Confirmed: true,
+        user2ProofCutByUsername: proofCutByUsername,
       });
     }
 
-    console.log(`[PROOF_SUBMITTED] telegramId=${telegramId} submitted proof for matchId=${matchId}.`);
-    await User.updateOne({ telegramId }, { state: "awaiting_partner_approval" });
+    console.log(`[PROOF_SUBMITTED] telegramId=${telegramId} submitted proof for matchId=${matchId} proofCutByUsername=${proofCutByUsername ?? "null"}.`);
+    await User.updateOne({ telegramId }, { state: "awaiting_partner_approval", proofCutByUsername: null });
     await ctx.reply("✅ Proof received successfully!\n\nYour cut buddy is checking it now 👀✨");
 
     const approveButtons = Markup.inlineKeyboard([
@@ -1693,8 +1710,12 @@ export function createBot(): Telegraf {
       Markup.button.callback("❌ Reject Proof", `reject_proof:${matchId}:${telegramId}`),
     ]);
 
+    const proofAccountLine = proofCutByUsername
+      ? `\n\nCut done using TikTok account:\n@${proofCutByUsername}`
+      : "";
+
     await bot.telegram.sendPhoto(partnerId, proofFileId, {
-      caption: `📸 Your cut buddy just sent their proof!\n\nTake a quick look below and make sure everything's valid 👀✨`,
+      caption: `📸 Your cut buddy just sent their proof!${proofAccountLine}\n\nTake a quick look below and make sure everything's valid 👀✨`,
       parse_mode: "Markdown",
       ...approveButtons,
     });
@@ -1969,6 +1990,29 @@ export function createBot(): Telegraf {
       return;
     }
 
+    if (user.state === "awaiting_proof_cut_username") {
+      const rawInput = text.trim();
+      const normalizedUsername = rawInput.replace(/^@/, "").toLowerCase().trim();
+
+      if (!normalizedUsername || !/^[\w.]+$/.test(normalizedUsername)) {
+        console.log(`[PROOF_ACCOUNT_INVALID] telegramId=${telegramId} — invalid username input: "${rawInput}"`);
+        await ctx.reply("Oops 😭\n\nPlease send a valid TikTok username.\n\nExample:\n@username");
+        return;
+      }
+
+      await User.updateOne({ telegramId }, { state: "awaiting_proof", proofCutByUsername: normalizedUsername });
+      console.log(`[PROOF_ACCOUNT_CUSTOM_ENTERED] telegramId=${telegramId} — entered username: "${normalizedUsername}"`);
+      console.log(`[PROOF_ACCOUNT_SAVED] telegramId=${telegramId} proofCutByUsername=@${normalizedUsername}`);
+
+      await ctx.reply("📸 Okieee now send a screenshot as proof that you've completed your partner's cut ✨");
+      return;
+    }
+
+    if (user.state === "awaiting_proof_account_selection") {
+      await ctx.reply("Sila pilih salah satu pilihan di atas 👆✨");
+      return;
+    }
+
     if (user.state === "in_match") {
       await ctx.reply("Sila tekan butang *✅ Done Cut* apabila anda selesai cut link partner.", { parse_mode: "Markdown" });
       return;
@@ -2000,14 +2044,81 @@ export function createBot(): Telegraf {
     // Atomic state transition: only succeeds if user is still in_match
     const updated = await User.findOneAndUpdate(
       { telegramId, state: "in_match" },
-      { state: "awaiting_proof" },
+      { state: "awaiting_proof_account_selection" },
     );
     if (!updated) {
       console.log(`[DUPLICATE_CALLBACK_BLOCKED] done_cut — telegramId=${telegramId} — not in_match state.`);
       await ctx.reply("⚠️ Action already processed.");
       return;
     }
+
+    console.log(`[PROOF_ACCOUNT_SELECTION_STARTED] telegramId=${telegramId}`);
+
+    const user = await User.findOne({ telegramId });
+    const registeredUsername = user?.tiktokUsername ?? "unknown";
+
+    await ctx.reply(
+      `Hii 👀✨\n\nWhich TikTok account did you use to cut your partner's link?\n\nExample:\n@username`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback(`✅ Use registered account (@${registeredUsername})`, "proof_use_registered")],
+        [Markup.button.callback("✍️ Enter another username", "proof_enter_other")],
+        [Markup.button.callback("❌ Cancel", "proof_cancel_account_selection")],
+      ]),
+    );
+  });
+
+  bot.action("proof_use_registered", async (ctx) => {
+    await ctx.answerCbQuery();
+    const telegramId = ctx.from!.id;
+
+    try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch { /* already edited */ }
+
+    const user = await User.findOne({ telegramId });
+    if (!user || user.state !== "awaiting_proof_account_selection") {
+      await ctx.reply("⚠️ Action already processed.");
+      return;
+    }
+
+    const registeredUsername = user.tiktokUsername;
+    await User.updateOne({ telegramId }, { state: "awaiting_proof", proofCutByUsername: registeredUsername });
+    console.log(`[PROOF_ACCOUNT_REGISTERED_SELECTED] telegramId=${telegramId} — using registered @${registeredUsername}`);
+    console.log(`[PROOF_ACCOUNT_SAVED] telegramId=${telegramId} proofCutByUsername=@${registeredUsername}`);
+
     await ctx.reply("📸 Okieee now send a screenshot as proof that you've completed your partner's cut ✨");
+  });
+
+  bot.action("proof_enter_other", async (ctx) => {
+    await ctx.answerCbQuery();
+    const telegramId = ctx.from!.id;
+
+    try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch { /* already edited */ }
+
+    const user = await User.findOne({ telegramId });
+    if (!user || user.state !== "awaiting_proof_account_selection") {
+      await ctx.reply("⚠️ Action already processed.");
+      return;
+    }
+
+    await User.updateOne({ telegramId }, { state: "awaiting_proof_cut_username" });
+
+    await ctx.reply("✍️ Please type the TikTok username you used to cut your partner's link 👇\n\nExample:\n@username");
+  });
+
+  bot.action("proof_cancel_account_selection", async (ctx) => {
+    await ctx.answerCbQuery();
+    const telegramId = ctx.from!.id;
+
+    try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch { /* already edited */ }
+
+    const user = await User.findOne({ telegramId });
+    if (!user || user.state !== "awaiting_proof_account_selection") {
+      await ctx.reply("⚠️ Action already processed.");
+      return;
+    }
+
+    await User.updateOne({ telegramId }, { state: "in_match" });
+
+    await ctx.reply("❌ Cancelled. You can press ✅ Done Cut again when you're ready.");
   });
 
   bot.action("cancel_match", async (ctx) => {
