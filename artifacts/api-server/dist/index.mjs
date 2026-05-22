@@ -43859,6 +43859,25 @@ function createBot() {
     const telegramUsername = ctx.from.username ?? "";
     const payload = ctx.startPayload;
     const existingUser = await User.findOne({ telegramId });
+    if (existingUser && existingUser.state === "awaiting_proof_account_selection") {
+      console.log(`[PROOF_FLOW_COMMAND_BLOCKED] telegramId=${telegramId} \u2014 /start blocked during awaiting_proof_account_selection`);
+      const registeredUsername = existingUser.tiktokUsername ?? "unknown";
+      await ctx.reply(
+        `Hii \u{1F440}\u2728
+
+Which TikTok account did you use to cut your partner's link?
+
+Example:
+@username`,
+        import_telegraf.Markup.inlineKeyboard([
+          [import_telegraf.Markup.button.callback(`\u2705 Use registered account (@${registeredUsername})`, "proof_use_registered")],
+          [import_telegraf.Markup.button.callback("\u270D\uFE0F Enter another username", "proof_enter_other")],
+          [import_telegraf.Markup.button.callback("\u274C Cancel", "proof_cancel_account_selection")]
+        ])
+      );
+      console.log(`[PROOF_ACCOUNT_SELECTION_RESENT] telegramId=${telegramId} \u2014 resent via /start block`);
+      return;
+    }
     if (existingUser && existingUser.tiktokUsername && existingUser.tiktokUsername !== "__pending__") {
       const sus = await checkSuspension(telegramId);
       if (sus.suspended) {
@@ -45181,7 +45200,22 @@ ${refLink}`,
       return;
     }
     if (user.state === "awaiting_proof_account_selection") {
-      await ctx.reply("Sila pilih salah satu pilihan di atas \u{1F446}\u2728");
+      console.log(`[PROOF_FLOW_COMMAND_BLOCKED] telegramId=${telegramId} \u2014 text blocked during awaiting_proof_account_selection`);
+      const registeredUsername = user.tiktokUsername ?? "unknown";
+      await ctx.reply(
+        `Hii \u{1F440}\u2728
+
+Which TikTok account did you use to cut your partner's link?
+
+Example:
+@username`,
+        import_telegraf.Markup.inlineKeyboard([
+          [import_telegraf.Markup.button.callback(`\u2705 Use registered account (@${registeredUsername})`, "proof_use_registered")],
+          [import_telegraf.Markup.button.callback("\u270D\uFE0F Enter another username", "proof_enter_other")],
+          [import_telegraf.Markup.button.callback("\u274C Cancel", "proof_cancel_account_selection")]
+        ])
+      );
+      console.log(`[PROOF_ACCOUNT_SELECTION_RESENT] telegramId=${telegramId} \u2014 resent via text block`);
       return;
     }
     if (user.state === "in_match") {

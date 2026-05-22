@@ -958,6 +958,22 @@ export function createBot(): Telegraf {
 
     const existingUser = await User.findOne({ telegramId });
 
+    // Guard: user is mid-proof account selection — do NOT restart flow
+    if (existingUser && existingUser.state === "awaiting_proof_account_selection") {
+      console.log(`[PROOF_FLOW_COMMAND_BLOCKED] telegramId=${telegramId} — /start blocked during awaiting_proof_account_selection`);
+      const registeredUsername = existingUser.tiktokUsername ?? "unknown";
+      await ctx.reply(
+        `Hii 👀✨\n\nWhich TikTok account did you use to cut your partner's link?\n\nExample:\n@username`,
+        Markup.inlineKeyboard([
+          [Markup.button.callback(`✅ Use registered account (@${registeredUsername})`, "proof_use_registered")],
+          [Markup.button.callback("✍️ Enter another username", "proof_enter_other")],
+          [Markup.button.callback("❌ Cancel", "proof_cancel_account_selection")],
+        ]),
+      );
+      console.log(`[PROOF_ACCOUNT_SELECTION_RESENT] telegramId=${telegramId} — resent via /start block`);
+      return;
+    }
+
     if (existingUser && existingUser.tiktokUsername && existingUser.tiktokUsername !== "__pending__") {
       const sus = await checkSuspension(telegramId);
       if (sus.suspended) { await ctx.reply(sus.message); return; }
@@ -2276,7 +2292,17 @@ export function createBot(): Telegraf {
     }
 
     if (user.state === "awaiting_proof_account_selection") {
-      await ctx.reply("Sila pilih salah satu pilihan di atas 👆✨");
+      console.log(`[PROOF_FLOW_COMMAND_BLOCKED] telegramId=${telegramId} — text blocked during awaiting_proof_account_selection`);
+      const registeredUsername = user.tiktokUsername ?? "unknown";
+      await ctx.reply(
+        `Hii 👀✨\n\nWhich TikTok account did you use to cut your partner's link?\n\nExample:\n@username`,
+        Markup.inlineKeyboard([
+          [Markup.button.callback(`✅ Use registered account (@${registeredUsername})`, "proof_use_registered")],
+          [Markup.button.callback("✍️ Enter another username", "proof_enter_other")],
+          [Markup.button.callback("❌ Cancel", "proof_cancel_account_selection")],
+        ]),
+      );
+      console.log(`[PROOF_ACCOUNT_SELECTION_RESENT] telegramId=${telegramId} — resent via text block`);
       return;
     }
 
