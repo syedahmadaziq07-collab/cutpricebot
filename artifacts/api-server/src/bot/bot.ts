@@ -291,6 +291,11 @@ async function performStuckCleanup(bot: Telegraf): Promise<{ clearedMatches: num
     "awaiting_reject_reason",
   ]);
 
+  // First: attempt to match any inqueue users with each other before resetting them.
+  // This fixes the case where 2+ users are all in queue but nobody new submits a link.
+  await retryQueueMatchingInternal(bot);
+
+  // Now fetch users who are STILL stuck (not just matched above)
   const stuckUsers = await User.find({
     state: { $in: STUCK_STATES },
     updatedAt: { $lt: cutoff },
@@ -374,6 +379,88 @@ export function scheduleStuckCleanup(bot: Telegraf): void {
     }
   });
   console.log("[STUCK_CLEANUP_AUTO] Scheduler registered: stuck cleanup every 30 minutes.");
+}
+
+// ─── Queue Retry Matching ─────────────────────────────────────────────────────
+
+interface QueueRetryResult {
+  matched: number;
+  reasons: Map<number, string>;
+}
+
+async function retryQueueMatchingInternal(bot: Telegraf): Promise<QueueRetryResult> {
+  console.log(`[RETRY_QUEUE_MATCHING_STARTED] Scanning all inqueue users for eligible matches.`);
+
+  const queuedUsers = await User.find({
+    state: "inqueue",
+    isWaiting: true,
+    activeMatchId: null,
+    pendingLink: { $nin: [null, ""] },
+  }).sort({ queuedAt: 1 }); // FIFO
+
+  if (queuedUsers.length === 0) {
+    return { matched: 0, reasons: new Map() };
+  }
+
+  console.log(`[QUEUE_STUCK_DETECTED] ${queuedUsers.length} user(s) found in queue. Attempting retry matching.`);
+
+  let matched = 0;
+  const reasons = new Map<number, string>();
+
+  for (const user of queuedUsers) {
+    const { telegramId, pendingLink } = user;
+
+    // Re-fetch: skip users already claimed by a prior iteration in this run
+    const fresh = await User.findOne({ telegramId }).select("state");
+    if (!fresh || fresh.state !== "inqueue") {
+      reasons.set(telegramId, "ALREADY_MATCHED");
+      continue;
+    }
+
+    // Must have a pending link
+    if (!pendingLink) {
+      reasons.set(telegramId, "STALE_QUEUE");
+      console.log(`[RETRY_QUEUE_SKIPPED_REASON] telegramId=${telegramId} reason=STALE_QUEUE`);
+      continue;
+    }
+
+    // Skip banned / on cooldown
+    const sus = await checkSuspension(telegramId);
+    if (sus.suspended) {
+      reasons.set(telegramId, "COOLDOWN");
+      console.log(`[RETRY_QUEUE_SKIPPED_REASON] telegramId=${telegramId} reason=COOLDOWN`);
+      continue;
+    }
+
+    // Attempt atomic match — respects ALL existing rules (24h exclusion, ban, cooldown, FIFO, active match check)
+    const didMatch = await tryMatchAtomic(bot, telegramId, pendingLink);
+    if (didMatch) {
+      matched++;
+      console.log(`[RETRY_QUEUE_MATCH_CREATED] telegramId=${telegramId} — matched via queue retry.`);
+    } else {
+      reasons.set(telegramId, "NO_ELIGIBLE_PARTNER");
+      console.log(`[QUEUE_NO_ELIGIBLE_PARTNER] telegramId=${telegramId} — no eligible partner found during retry.`);
+    }
+  }
+
+  console.log(`[RETRY_QUEUE_MATCHING_FINISHED] matched=${matched} stillWaiting=${reasons.size} total=${queuedUsers.length}`);
+  return { matched, reasons };
+}
+
+export function scheduleQueueRetry(bot: Telegraf): void {
+  // Runs every 5 minutes — re-triggers matching for already-queued users when no new claimant arrives
+  schedule("*/5 * * * *", async () => {
+    try {
+      const queueSize = await User.countDocuments({ state: "inqueue", isWaiting: true });
+      if (queueSize >= 2) {
+        console.log(`[QUEUE_RETRY_CRON] ${queueSize} user(s) in queue — triggering retry matching.`);
+        await retryQueueMatchingInternal(bot);
+      }
+    } catch (err) {
+      console.error(`[QUEUE_RETRY_CRON_FAILED] ${(err as Error).message}`);
+    }
+  });
+  console.log("[QUEUE_RETRY_CRON] Scheduler registered: queue retry matching every 5 minutes.");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1950,6 +2037,114 @@ export function createBot(): Telegraf {
       `📊 *Status kau:*\n\nTikTok: @${user.tiktokUsername}\nCut baki: ${user.cutBalance}\nStrikes: ${user.strikes}/3\nStatus: ${statusMap[user.state] ?? user.state}`,
       { parse_mode: "Markdown" },
     );
+  });
+
+  bot.command("debug_queue_reasons", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) { await ctx.reply("🚫 Unauthorized."); return; }
+
+    const queuedUsers = await User.find({ state: "inqueue", isWaiting: true }).sort({ queuedAt: 1 });
+
+    if (queuedUsers.length === 0) {
+      await ctx.reply("✅ Queue is empty — no users waiting.");
+      return;
+    }
+
+    const now = new Date();
+    const since = new Date(now.getTime() - COOLDOWN_MS);
+
+    const lines = await Promise.all(queuedUsers.map(async (user, i) => {
+      const { telegramId, tiktokUsername, pendingLink, queuedAt, isBanned, suspendedUntil, activeMatchId } = user;
+      const ageMin = queuedAt ? Math.round((Date.now() - queuedAt.getTime()) / (1000 * 60)) : "?";
+
+      const reasons: string[] = [];
+
+      if (isBanned) reasons.push("BANNED");
+      if (suspendedUntil && suspendedUntil > now) reasons.push("COOLDOWN");
+      if (!pendingLink) reasons.push("STALE_QUEUE");
+
+      if (activeMatchId) {
+        const activeMatch = await Match.findOne({ _id: activeMatchId, status: "active" });
+        if (activeMatch) reasons.push("ACTIVE_MATCH");
+      }
+
+      // Build 24h exclusion set for this user
+      const recentHistory = await MatchHistory.find({
+        $or: [{ userIdA: telegramId }, { userIdB: telegramId }],
+        matchedAt: { $gte: since },
+      }).select("userIdA userIdB");
+      const excludedIds = new Set(recentHistory.map(h => h.userIdA === telegramId ? h.userIdB : h.userIdA));
+
+      if (reasons.length === 0) {
+        const otherQueued = queuedUsers.filter(u => u.telegramId !== telegramId);
+        const eligible = otherQueued.filter(u =>
+          !u.isBanned &&
+          !(u.suspendedUntil && u.suspendedUntil > now) &&
+          u.pendingLink &&
+          !excludedIds.has(u.telegramId),
+        );
+        if (otherQueued.length > 0 && eligible.length === 0) {
+          const allBlockedBy24h = otherQueued.every(u => excludedIds.has(u.telegramId));
+          reasons.push(allBlockedBy24h ? "RECENT_PAIR_24H" : "NO_ELIGIBLE_PARTNER");
+        } else if (otherQueued.length === 0) {
+          reasons.push("NO_ELIGIBLE_PARTNER");
+        }
+      }
+
+      const reasonStr = reasons.length > 0 ? reasons.join(", ") : "ELIGIBLE — retry pending";
+
+      return (
+        `${i + 1}. @${tiktokUsername} (${telegramId})\n` +
+        `   In queue: ${ageMin} min | pendingLink: ${pendingLink ? "SET" : "NULL"}\n` +
+        `   Excluded 24h pairs: ${excludedIds.size}\n` +
+        `   Reason: ${reasonStr}`
+      );
+    }));
+
+    const header = `🔍 *Queue Reasons (${queuedUsers.length} user(s)):*\n\n`;
+    const body = lines.join("\n\n");
+    const full = header + body;
+
+    if (full.length <= 4000) {
+      await ctx.reply(full, { parse_mode: "Markdown" });
+    } else {
+      await ctx.reply(header + `(sending in chunks)`, { parse_mode: "Markdown" });
+      for (const line of lines) {
+        await ctx.reply(line);
+      }
+    }
+  });
+
+  bot.command("retry_queue_matching", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) { await ctx.reply("🚫 Unauthorized."); return; }
+
+    const queueSize = await User.countDocuments({ state: "inqueue", isWaiting: true });
+    if (queueSize === 0) {
+      await ctx.reply("✅ Queue is empty — nothing to retry.");
+      return;
+    }
+
+    await ctx.reply(`🔄 Retrying queue matching for ${queueSize} user(s)...`);
+
+    try {
+      const { matched, reasons } = await retryQueueMatchingInternal(bot);
+
+      const reasonSummary = new Map<string, number>();
+      for (const reason of reasons.values()) {
+        reasonSummary.set(reason, (reasonSummary.get(reason) ?? 0) + 1);
+      }
+      const reasonLines = [...reasonSummary.entries()]
+        .filter(([reason]) => reason !== "ALREADY_MATCHED")
+        .map(([reason, count]) => `  • ${reason}: ${count}`)
+        .join("\n");
+
+      await ctx.reply(
+        `✅ Queue retry complete.\n\nMatched: ${matched}\nStill waiting: ${reasons.size - (reasonSummary.get("ALREADY_MATCHED") ?? 0)}\n` +
+        (reasonLines ? `\nReasons not matched:\n${reasonLines}` : ""),
+      );
+    } catch (err) {
+      console.error(`[RETRY_QUEUE_MATCHING_ADMIN_FAILED] ${(err as Error).message}`);
+      await ctx.reply(`❌ Retry failed: ${(err as Error).message}`);
+    }
   });
 
   bot.command("clear_stuck_matches", async (ctx) => {

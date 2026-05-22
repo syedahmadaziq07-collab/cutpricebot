@@ -1,7 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { connectDB } from "./bot/db";
-import { createBot, cleanupStaleQueue, scheduleDailyMidnightReset, scheduleStuckCleanup } from "./bot/bot";
+import { createBot, cleanupStaleQueue, scheduleDailyMidnightReset, scheduleStuckCleanup, scheduleQueueRetry } from "./bot/bot";
 
 const rawPort = process.env["PORT"];
 const port = rawPort ? Number(rawPort) : null;
@@ -20,6 +20,7 @@ async function main() {
   const bot = createBot();
   scheduleDailyMidnightReset(bot);
   scheduleStuckCleanup(bot);
+  scheduleQueueRetry(bot);
   console.log("Clearing any existing Telegram webhook...");
   await bot.telegram.deleteWebhook({ drop_pending_updates: false });
   console.log("Webhook cleared. Starting polling...");
