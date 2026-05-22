@@ -819,6 +819,47 @@ async function checkAndCompleteMatch(bot: Telegraf, matchId: string): Promise<vo
   } catch (err) {
     console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED] matchId=${matchId} swap-completed fetch error: ${(err as Error).message}`);
   }
+
+  // Social proof broadcast — single combined notification to all bystanders
+  try {
+    const [pA, pB] = await Promise.all([
+      User.findOne({ telegramId: match.user1Id }).select("telegramUsername"),
+      User.findOne({ telegramId: match.user2Id }).select("telegramUsername"),
+    ]);
+    const maskUsername = (username?: string | null): string => {
+      if (!username || username.trim() === "") return "Someone cute ✨";
+      const clean = username.replace(/^@/, "");
+      return `@${clean.slice(0, 2)}*****`;
+    };
+    const maskedA = maskUsername(pA?.telegramUsername);
+    const maskedB = maskUsername(pB?.telegramUsername);
+    const socialMsg =
+      `🎉 Another cut swap just got completed 👀✨\n\n` +
+      `Users:\n${maskedA}\n${maskedB}\n\n` +
+      `More people are swapping right now 🔥`;
+
+    const now = new Date();
+    const bystanders = await User.find({
+      telegramId: { $nin: [match.user1Id, match.user2Id] },
+      tiktokUsername: { $nin: ["__pending__", ""] },
+      isBanned: false,
+      $and: [
+        { $or: [{ suspendedUntil: null }, { suspendedUntil: { $lte: now } }] },
+        { $or: [{ cancelCooldownUntil: null }, { cancelCooldownUntil: { $lte: now } }] },
+      ],
+    }).select("telegramId tiktokUsername");
+
+    for (const u of bystanders) {
+      try {
+        await bot.telegram.sendMessage(u.telegramId, socialMsg);
+        console.log(`[SWAP_COMPLETE_SOCIAL_PROOF_SENT] matchId=${matchId} → telegramId=${u.telegramId} (@${u.tiktokUsername})`);
+      } catch {
+        console.log(`[SWAP_COMPLETE_SOCIAL_PROOF_SKIPPED] matchId=${matchId} → telegramId=${u.telegramId} (@${u.tiktokUsername}) — send failed (blocked or unavailable)`);
+      }
+    }
+  } catch (err) {
+    console.error(`[SWAP_COMPLETE_SOCIAL_PROOF_SKIPPED] matchId=${matchId} — broadcast aborted: ${(err as Error).message}`);
+  }
 }
 
 function getAdminIds(): number[] {

@@ -43747,6 +43747,46 @@ Both users completed proof approval successfully \u{1F91D}\u2728`;
   } catch (err) {
     console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED] matchId=${matchId} swap-completed fetch error: ${err.message}`);
   }
+  try {
+    const [pA, pB] = await Promise.all([
+      User.findOne({ telegramId: match.user1Id }).select("telegramUsername"),
+      User.findOne({ telegramId: match.user2Id }).select("telegramUsername")
+    ]);
+    const maskUsername = (username) => {
+      if (!username || username.trim() === "") return "Someone cute \u2728";
+      const clean = username.replace(/^@/, "");
+      return `@${clean.slice(0, 2)}*****`;
+    };
+    const maskedA = maskUsername(pA?.telegramUsername);
+    const maskedB = maskUsername(pB?.telegramUsername);
+    const socialMsg = `\u{1F389} Another cut swap just got completed \u{1F440}\u2728
+
+Users:
+${maskedA}
+${maskedB}
+
+More people are swapping right now \u{1F525}`;
+    const now = /* @__PURE__ */ new Date();
+    const bystanders = await User.find({
+      telegramId: { $nin: [match.user1Id, match.user2Id] },
+      tiktokUsername: { $nin: ["__pending__", ""] },
+      isBanned: false,
+      $and: [
+        { $or: [{ suspendedUntil: null }, { suspendedUntil: { $lte: now } }] },
+        { $or: [{ cancelCooldownUntil: null }, { cancelCooldownUntil: { $lte: now } }] }
+      ]
+    }).select("telegramId tiktokUsername");
+    for (const u of bystanders) {
+      try {
+        await bot.telegram.sendMessage(u.telegramId, socialMsg);
+        console.log(`[SWAP_COMPLETE_SOCIAL_PROOF_SENT] matchId=${matchId} \u2192 telegramId=${u.telegramId} (@${u.tiktokUsername})`);
+      } catch {
+        console.log(`[SWAP_COMPLETE_SOCIAL_PROOF_SKIPPED] matchId=${matchId} \u2192 telegramId=${u.telegramId} (@${u.tiktokUsername}) \u2014 send failed (blocked or unavailable)`);
+      }
+    }
+  } catch (err) {
+    console.error(`[SWAP_COMPLETE_SOCIAL_PROOF_SKIPPED] matchId=${matchId} \u2014 broadcast aborted: ${err.message}`);
+  }
 }
 function getAdminIds() {
   return (process.env["ADMIN_IDS"] ?? "").split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
