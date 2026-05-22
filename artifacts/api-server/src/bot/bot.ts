@@ -944,10 +944,11 @@ export function createBot(): Telegraf {
       const now = new Date();
       const updatedTime = now.toUTCString().replace("GMT", "UTC");
 
-      const registeredUserCount = await User.countDocuments();
-      console.log(`[REGISTERED_USER_COUNT_FETCHED] count=${registeredUserCount}`);
-      const displayCount = 503 + ((registeredUserCount - 1) * 2);
-      console.log(`[TOTAL_ACTIVE_SOCIAL_PROOF_RENDERED] displayCount=${displayCount} (formula: 503 + ((${registeredUserCount} - 1) * 2))`);
+      const totalUserCount = await User.countDocuments();
+      console.log(`[REGISTERED_USER_COUNT_FETCHED] count=${totalUserCount}`);
+      const displayCount = 200 + (totalUserCount * 3);
+      console.log(`[TOTAL_ACTIVE_SOCIAL_PROOF_RENDERED] displayCount=${displayCount} (formula: 200 + (${totalUserCount} * 3))`);
+      console.log(`[TOTAL_ACTIVE_SOCIAL_PROOF_INCREMENTED] totalUniqueUsers=${totalUserCount} displayCount=${displayCount}`);
 
       const me = await bot.telegram.getMe();
       const refLink = `https://t.me/${me.username}?start=ref_${existingUser.referralCode}`;
