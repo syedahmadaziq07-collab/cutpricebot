@@ -131,6 +131,7 @@ const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const matchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const proofTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const proofReminderTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const adminBroadcastPending = new Set<number>(); // admins awaiting broadcast message input
 
 const NO_RESPONSE_TIMEOUT_MS = 10 * 60 * 1000;
 const NO_RESPONSE_REMINDER_MS = 8 * 60 * 1000;
@@ -1582,21 +1583,33 @@ export function createBot(): Telegraf {
   });
 
   bot.command("broadcast", async (ctx) => {
-    if (!getAdminIds().includes(ctx.from.id)) { await ctx.reply("🚫 Unauthorized."); return; }
+    const adminId = ctx.from.id;
+    if (!getAdminIds().includes(adminId)) { await ctx.reply("🚫 Unauthorized."); return; }
 
-    const text = ctx.message.text.replace(/^\/broadcast\s*/i, "").trim();
-    if (!text) {
-      await ctx.reply("ℹ️ Usage: `/broadcast <your message>`\n\nThe message will be sent to all registered users.", { parse_mode: "Markdown" });
+    const inlineText = ctx.message.text.replace(/^\/broadcast\s*/i, "").trim();
+
+    if (!inlineText) {
+      // Two-step flow: enter awaiting state
+      adminBroadcastPending.add(adminId);
+      console.log(`[BROADCAST_FLOW_STARTED] adminId=${adminId} — awaiting broadcast message input.`);
+      await ctx.reply("📢 Send the announcement message you want to broadcast.\n\nType /cancel to cancel.");
       return;
     }
 
-    const users = await User.find({ tiktokUsername: { $ne: "__pending__" }, isBanned: false }).select("telegramId");
+    // Inline shortcut: /broadcast your message here
+    await executeBroadcast(bot, ctx.chat.id, adminId, inlineText);
+  });
+
+  async function executeBroadcast(bot: Telegraf, chatId: number, adminId: number, text: string): Promise<void> {
+    console.log(`[BROADCAST_MESSAGE_RECEIVED] adminId=${adminId} message="${text.slice(0, 80)}"`);
+
+    const users = await User.find({ isBanned: false }).select("telegramId");
     if (users.length === 0) {
-      await ctx.reply("⚠️ No registered users found.");
+      await bot.telegram.sendMessage(chatId, "⚠️ No users found.");
       return;
     }
 
-    const statusMsg = await ctx.reply(`📡 Sending to ${users.length} user(s)…`);
+    const statusMsg = await bot.telegram.sendMessage(chatId, `📡 Sending to ${users.length} user(s)…`);
     let sent = 0;
     let failed = 0;
 
@@ -1604,21 +1617,22 @@ export function createBot(): Telegraf {
       try {
         await bot.telegram.sendMessage(u.telegramId, text);
         sent++;
-      } catch {
+        console.log(`[BROADCAST_SENT_TO_USER] telegramId=${u.telegramId}`);
+      } catch (err) {
         failed++;
+        console.error(`[BROADCAST_SEND_FAILED] telegramId=${u.telegramId}: ${(err as Error).message}`);
       }
-      // Small delay to avoid Telegram rate limits
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
     await bot.telegram.editMessageText(
-      ctx.chat.id,
+      chatId,
       statusMsg.message_id,
       undefined,
       `✅ Broadcast complete!\n\n📨 Sent: ${sent}\n❌ Failed: ${failed}\n👥 Total: ${users.length}`,
     );
-    console.log(`[BROADCAST] adminId=${ctx.from.id} — sent=${sent} failed=${failed} total=${users.length}`);
-  });
+    console.log(`[BROADCAST_FINISHED] adminId=${adminId} — sent=${sent} failed=${failed} total=${users.length}`);
+  }
 
   bot.command("status", async (ctx) => {
     const user = await User.findOne({ telegramId: ctx.from.id });
@@ -1789,6 +1803,19 @@ export function createBot(): Telegraf {
     const telegramId = ctx.from.id;
     const text = ctx.message.text.trim();
     console.log(`[MSG] text from telegramId=${telegramId}: ${text.slice(0, 80)}`);
+
+    // Admin broadcast intercept — must run before any user logic
+    if (adminBroadcastPending.has(telegramId)) {
+      if (text.startsWith("/cancel")) {
+        adminBroadcastPending.delete(telegramId);
+        await ctx.reply("❌ Broadcast cancelled.");
+        return;
+      }
+      if (text.startsWith("/")) return; // ignore other commands while awaiting
+      adminBroadcastPending.delete(telegramId);
+      await executeBroadcast(bot, ctx.chat.id, telegramId, text);
+      return;
+    }
 
     if (text.startsWith("/")) return;
 

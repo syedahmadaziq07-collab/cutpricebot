@@ -43139,6 +43139,7 @@ var COOLDOWN_MS = 24 * 60 * 60 * 1e3;
 var matchTimers = /* @__PURE__ */ new Map();
 var proofTimers = /* @__PURE__ */ new Map();
 var proofReminderTimers = /* @__PURE__ */ new Map();
+var adminBroadcastPending = /* @__PURE__ */ new Set();
 var NO_RESPONSE_TIMEOUT_MS = 10 * 60 * 1e3;
 var NO_RESPONSE_REMINDER_MS = 8 * 60 * 1e3;
 var NO_RESPONSE_COOLDOWN_30M_MS = 30 * 60 * 1e3;
@@ -44462,34 +44463,43 @@ Candidates found: ${candidates.length}`);
     await ctx.reply(report, { parse_mode: "Markdown" });
   });
   bot.command("broadcast", async (ctx) => {
-    if (!getAdminIds().includes(ctx.from.id)) {
+    const adminId = ctx.from.id;
+    if (!getAdminIds().includes(adminId)) {
       await ctx.reply("\u{1F6AB} Unauthorized.");
       return;
     }
-    const text = ctx.message.text.replace(/^\/broadcast\s*/i, "").trim();
-    if (!text) {
-      await ctx.reply("\u2139\uFE0F Usage: `/broadcast <your message>`\n\nThe message will be sent to all registered users.", { parse_mode: "Markdown" });
+    const inlineText = ctx.message.text.replace(/^\/broadcast\s*/i, "").trim();
+    if (!inlineText) {
+      adminBroadcastPending.add(adminId);
+      console.log(`[BROADCAST_FLOW_STARTED] adminId=${adminId} \u2014 awaiting broadcast message input.`);
+      await ctx.reply("\u{1F4E2} Send the announcement message you want to broadcast.\n\nType /cancel to cancel.");
       return;
     }
-    const users = await User.find({ tiktokUsername: { $ne: "__pending__" }, isBanned: false }).select("telegramId");
+    await executeBroadcast(bot, ctx.chat.id, adminId, inlineText);
+  });
+  async function executeBroadcast(bot2, chatId, adminId, text) {
+    console.log(`[BROADCAST_MESSAGE_RECEIVED] adminId=${adminId} message="${text.slice(0, 80)}"`);
+    const users = await User.find({ isBanned: false }).select("telegramId");
     if (users.length === 0) {
-      await ctx.reply("\u26A0\uFE0F No registered users found.");
+      await bot2.telegram.sendMessage(chatId, "\u26A0\uFE0F No users found.");
       return;
     }
-    const statusMsg = await ctx.reply(`\u{1F4E1} Sending to ${users.length} user(s)\u2026`);
+    const statusMsg = await bot2.telegram.sendMessage(chatId, `\u{1F4E1} Sending to ${users.length} user(s)\u2026`);
     let sent = 0;
     let failed = 0;
     for (const u of users) {
       try {
-        await bot.telegram.sendMessage(u.telegramId, text);
+        await bot2.telegram.sendMessage(u.telegramId, text);
         sent++;
-      } catch {
+        console.log(`[BROADCAST_SENT_TO_USER] telegramId=${u.telegramId}`);
+      } catch (err) {
         failed++;
+        console.error(`[BROADCAST_SEND_FAILED] telegramId=${u.telegramId}: ${err.message}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    await bot.telegram.editMessageText(
-      ctx.chat.id,
+    await bot2.telegram.editMessageText(
+      chatId,
       statusMsg.message_id,
       void 0,
       `\u2705 Broadcast complete!
@@ -44498,8 +44508,8 @@ Candidates found: ${candidates.length}`);
 \u274C Failed: ${failed}
 \u{1F465} Total: ${users.length}`
     );
-    console.log(`[BROADCAST] adminId=${ctx.from.id} \u2014 sent=${sent} failed=${failed} total=${users.length}`);
-  });
+    console.log(`[BROADCAST_FINISHED] adminId=${adminId} \u2014 sent=${sent} failed=${failed} total=${users.length}`);
+  }
   bot.command("status", async (ctx) => {
     const user = await User.findOne({ telegramId: ctx.from.id });
     if (!user || user.tiktokUsername === "__pending__") {
@@ -44653,6 +44663,17 @@ Take a quick look below and make sure everything's valid \u{1F440}\u2728`,
     const telegramId = ctx.from.id;
     const text = ctx.message.text.trim();
     console.log(`[MSG] text from telegramId=${telegramId}: ${text.slice(0, 80)}`);
+    if (adminBroadcastPending.has(telegramId)) {
+      if (text.startsWith("/cancel")) {
+        adminBroadcastPending.delete(telegramId);
+        await ctx.reply("\u274C Broadcast cancelled.");
+        return;
+      }
+      if (text.startsWith("/")) return;
+      adminBroadcastPending.delete(telegramId);
+      await executeBroadcast(bot, ctx.chat.id, telegramId, text);
+      return;
+    }
     if (text.startsWith("/")) return;
     const sus = await checkSuspension(telegramId);
     if (sus.suspended) {
