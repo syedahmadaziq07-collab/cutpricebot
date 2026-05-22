@@ -43615,7 +43615,7 @@ async function handleMatchExpiry(bot, matchId, user1Id, user2Id) {
     bot,
     user1Id,
     user2Id,
-    "Match timer expired \u2014 4-minute match window elapsed with no action.",
+    "Match timer expired \u2014 10-minute match window elapsed with no action.",
     matchId
   );
   const expireMsg = "\u23F0 Your cut buddy didn't respond in time \u{1F635}\u200D\u{1F4AB}\n\nNo worries \u2014 you can drop a new link now to get rematched \u{1F447}\u2728";
@@ -43758,7 +43758,7 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
   );
   await Queue.deleteMany({ telegramId: { $in: [currentTelegramId, partner.telegramId] } });
   const partnerPendingLink = partner.pendingLink ?? "";
-  const expiresAt = new Date(now.getTime() + 4 * 60 * 1e3);
+  const expiresAt = new Date(now.getTime() + 10 * 60 * 1e3);
   const pairKey = [currentTelegramId, partner.telegramId].sort((a, b) => a - b).join(":");
   const [matchDoc] = await Promise.all([
     Match.create({
@@ -43811,9 +43811,11 @@ Go show some love and finish the cut first \u{1F91D}\u2728`,
       { ...matchButtons }
     )
   ]);
+  console.log(`[MATCH_EXPIRY_TIMER_10M_STARTED] matchId=${matchId} \u2014 10-minute expiry timer started.`);
   const timer = setTimeout(async () => {
+    console.log(`[MATCH_EXPIRY_TIMER_10M_TRIGGERED] matchId=${matchId} \u2014 10-minute window elapsed, triggering expiry.`);
     await handleMatchExpiry(bot, matchId, currentTelegramId, partner.telegramId);
-  }, 4 * 60 * 1e3);
+  }, 10 * 60 * 1e3);
   matchTimers.set(matchId, timer);
   void matchDoc;
   return true;

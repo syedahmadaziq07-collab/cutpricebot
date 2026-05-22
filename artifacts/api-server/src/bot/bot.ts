@@ -714,7 +714,7 @@ async function handleMatchExpiry(
   // Admin notification — match timer expired
   await notifyAdminMatchCancelled(
     bot, user1Id, user2Id,
-    "Match timer expired — 4-minute match window elapsed with no action.",
+    "Match timer expired — 10-minute match window elapsed with no action.",
     matchId,
   );
 
@@ -890,7 +890,7 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
   await Queue.deleteMany({ telegramId: { $in: [currentTelegramId, partner.telegramId] } });
 
   const partnerPendingLink = partner.pendingLink ?? "";
-  const expiresAt = new Date(now.getTime() + 4 * 60 * 1000);
+  const expiresAt = new Date(now.getTime() + 10 * 60 * 1000);
 
   // Create Match (with pre-generated _id) and MatchHistory in parallel
   const pairKey = [currentTelegramId, partner.telegramId].sort((a, b) => a - b).join(":");
@@ -933,9 +933,11 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
     ),
   ]);
 
+  console.log(`[MATCH_EXPIRY_TIMER_10M_STARTED] matchId=${matchId} — 10-minute expiry timer started.`);
   const timer = setTimeout(async () => {
+    console.log(`[MATCH_EXPIRY_TIMER_10M_TRIGGERED] matchId=${matchId} — 10-minute window elapsed, triggering expiry.`);
     await handleMatchExpiry(bot, matchId, currentTelegramId, partner.telegramId);
-  }, 4 * 60 * 1000);
+  }, 10 * 60 * 1000);
   matchTimers.set(matchId, timer);
 
   void matchDoc; // silence unused-var warning
