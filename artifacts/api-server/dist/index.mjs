@@ -18672,10 +18672,10 @@ var require_view = __commonJS({
     var debug = require_src()("express:view");
     var path = __require("node:path");
     var fs = __require("node:fs");
-    var dirname = path.dirname;
+    var dirname2 = path.dirname;
     var basename = path.basename;
     var extname = path.extname;
-    var join = path.join;
+    var join2 = path.join;
     var resolve = path.resolve;
     module.exports = View;
     function View(name, options) {
@@ -18711,7 +18711,7 @@ var require_view = __commonJS({
       for (var i = 0; i < roots.length && !path2; i++) {
         var root = roots[i];
         var loc = resolve(root, name);
-        var dir = dirname(loc);
+        var dir = dirname2(loc);
         var file = basename(loc);
         path2 = this.resolve(dir, file);
       }
@@ -18737,12 +18737,12 @@ var require_view = __commonJS({
     };
     View.prototype.resolve = function resolve2(dir, file) {
       var ext = this.ext;
-      var path2 = join(dir, file);
+      var path2 = join2(dir, file);
       var stat = tryStat(path2);
       if (stat && stat.isFile()) {
         return path2;
       }
-      path2 = join(dir, basename(file, ext), "index" + ext);
+      path2 = join2(dir, basename(file, ext), "index" + ext);
       stat = tryStat(path2);
       if (stat && stat.isFile()) {
         return path2;
@@ -22447,7 +22447,7 @@ var require_send = __commonJS({
     var Stream = __require("stream");
     var util2 = __require("util");
     var extname = path.extname;
-    var join = path.join;
+    var join2 = path.join;
     var normalize = path.normalize;
     var resolve = path.resolve;
     var sep = path.sep;
@@ -22619,7 +22619,7 @@ var require_send = __commonJS({
           return res;
         }
         parts = path2.split(sep);
-        path2 = normalize(join(root, path2));
+        path2 = normalize(join2(root, path2));
       } else {
         if (UP_PATH_REGEXP.test(path2)) {
           debug('malicious path "%s"', path2);
@@ -22752,7 +22752,7 @@ var require_send = __commonJS({
           if (err) return self.onStatError(err);
           return self.error(404);
         }
-        var p = join(path2, self._index[i]);
+        var p = join2(path2, self._index[i]);
         debug('stat "%s"', p);
         fs.stat(p, function(err2, stat) {
           if (err2) return next(err2);
@@ -25876,7 +25876,7 @@ var require_thread_stream = __commonJS({
     var { version } = require_package();
     var { EventEmitter } = __require("events");
     var { Worker } = __require("worker_threads");
-    var { join } = __require("path");
+    var { join: join2 } = __require("path");
     var { pathToFileURL } = __require("url");
     var { wait } = require_wait();
     var {
@@ -25912,7 +25912,7 @@ var require_thread_stream = __commonJS({
     function createWorker(stream, opts) {
       const { filename, workerData } = opts;
       const bundlerOverrides = "__bundlerPathsOverrides" in globalThis ? globalThis.__bundlerPathsOverrides : {};
-      const toExecute = bundlerOverrides["thread-stream-worker"] || join(__dirname, "lib", "worker.js");
+      const toExecute = bundlerOverrides["thread-stream-worker"] || join2(__dirname, "lib", "worker.js");
       const worker = new Worker(toExecute, {
         ...opts.workerOpts,
         trackUnmanagedFds: false,
@@ -26298,7 +26298,7 @@ var require_transport = __commonJS({
     "use strict";
     var { createRequire } = __require("module");
     var getCallers = require_caller();
-    var { join, isAbsolute, sep } = __require("node:path");
+    var { join: join2, isAbsolute, sep } = __require("node:path");
     var sleep = require_atomic_sleep();
     var onExit = require_on_exit_leak_free();
     var ThreadStream = require_thread_stream();
@@ -26361,7 +26361,7 @@ var require_transport = __commonJS({
         throw new Error("only one of target or targets can be specified");
       }
       if (targets) {
-        target = bundlerOverrides["pino-worker"] || join(__dirname, "worker.js");
+        target = bundlerOverrides["pino-worker"] || join2(__dirname, "worker.js");
         options.targets = targets.filter((dest) => dest.target).map((dest) => {
           return {
             ...dest,
@@ -26379,7 +26379,7 @@ var require_transport = __commonJS({
           });
         });
       } else if (pipeline) {
-        target = bundlerOverrides["pino-worker"] || join(__dirname, "worker.js");
+        target = bundlerOverrides["pino-worker"] || join2(__dirname, "worker.js");
         options.pipelines = [pipeline.map((dest) => {
           return {
             ...dest,
@@ -26401,7 +26401,7 @@ var require_transport = __commonJS({
           return origin;
         }
         if (origin === "pino/file") {
-          return join(__dirname, "..", "file.js");
+          return join2(__dirname, "..", "file.js");
         }
         let fixTarget2;
         for (const filePath of callers) {
@@ -27390,7 +27390,7 @@ var require_safe_stable_stringify = __commonJS({
               return circularValue;
             }
             let res = "";
-            let join = ",";
+            let join2 = ",";
             const originalIndentation = indentation;
             if (Array.isArray(value)) {
               if (value.length === 0) {
@@ -27404,7 +27404,7 @@ var require_safe_stable_stringify = __commonJS({
                 indentation += spacer;
                 res += `
 ${indentation}`;
-                join = `,
+                join2 = `,
 ${indentation}`;
               }
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
@@ -27412,13 +27412,13 @@ ${indentation}`;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyFnReplacer(String(i), value, stack, replacer, spacer, indentation);
                 res += tmp2 !== void 0 ? tmp2 : "null";
-                res += join;
+                res += join2;
               }
               const tmp = stringifyFnReplacer(String(i), value, stack, replacer, spacer, indentation);
               res += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res += `${join}"... ${getItemCount(removedKeys)} not stringified"`;
+                res += `${join2}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               if (spacer !== "") {
                 res += `
@@ -27439,7 +27439,7 @@ ${originalIndentation}`;
             let separator = "";
             if (spacer !== "") {
               indentation += spacer;
-              join = `,
+              join2 = `,
 ${indentation}`;
               whitespace = " ";
             }
@@ -27453,13 +27453,13 @@ ${indentation}`;
               const tmp = stringifyFnReplacer(key2, value, stack, replacer, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}:${whitespace}${tmp}`;
-                separator = join;
+                separator = join2;
               }
             }
             if (keyLength > maximumBreadth) {
               const removedKeys = keyLength - maximumBreadth;
               res += `${separator}"...":${whitespace}"${getItemCount(removedKeys)} not stringified"`;
-              separator = join;
+              separator = join2;
             }
             if (spacer !== "" && separator.length > 1) {
               res = `
@@ -27500,7 +27500,7 @@ ${originalIndentation}`;
             }
             const originalIndentation = indentation;
             let res = "";
-            let join = ",";
+            let join2 = ",";
             if (Array.isArray(value)) {
               if (value.length === 0) {
                 return "[]";
@@ -27513,7 +27513,7 @@ ${originalIndentation}`;
                 indentation += spacer;
                 res += `
 ${indentation}`;
-                join = `,
+                join2 = `,
 ${indentation}`;
               }
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
@@ -27521,13 +27521,13 @@ ${indentation}`;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyArrayReplacer(String(i), value[i], stack, replacer, spacer, indentation);
                 res += tmp2 !== void 0 ? tmp2 : "null";
-                res += join;
+                res += join2;
               }
               const tmp = stringifyArrayReplacer(String(i), value[i], stack, replacer, spacer, indentation);
               res += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res += `${join}"... ${getItemCount(removedKeys)} not stringified"`;
+                res += `${join2}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               if (spacer !== "") {
                 res += `
@@ -27540,7 +27540,7 @@ ${originalIndentation}`;
             let whitespace = "";
             if (spacer !== "") {
               indentation += spacer;
-              join = `,
+              join2 = `,
 ${indentation}`;
               whitespace = " ";
             }
@@ -27549,7 +27549,7 @@ ${indentation}`;
               const tmp = stringifyArrayReplacer(key2, value[key2], stack, replacer, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}:${whitespace}${tmp}`;
-                separator = join;
+                separator = join2;
               }
             }
             if (spacer !== "" && separator.length > 1) {
@@ -27607,20 +27607,20 @@ ${originalIndentation}`;
               indentation += spacer;
               let res2 = `
 ${indentation}`;
-              const join2 = `,
+              const join3 = `,
 ${indentation}`;
               const maximumValuesToStringify = Math.min(value.length, maximumBreadth);
               let i = 0;
               for (; i < maximumValuesToStringify - 1; i++) {
                 const tmp2 = stringifyIndent(String(i), value[i], stack, spacer, indentation);
                 res2 += tmp2 !== void 0 ? tmp2 : "null";
-                res2 += join2;
+                res2 += join3;
               }
               const tmp = stringifyIndent(String(i), value[i], stack, spacer, indentation);
               res2 += tmp !== void 0 ? tmp : "null";
               if (value.length - 1 > maximumBreadth) {
                 const removedKeys = value.length - maximumBreadth - 1;
-                res2 += `${join2}"... ${getItemCount(removedKeys)} not stringified"`;
+                res2 += `${join3}"... ${getItemCount(removedKeys)} not stringified"`;
               }
               res2 += `
 ${originalIndentation}`;
@@ -27636,16 +27636,16 @@ ${originalIndentation}`;
               return '"[Object]"';
             }
             indentation += spacer;
-            const join = `,
+            const join2 = `,
 ${indentation}`;
             let res = "";
             let separator = "";
             let maximumPropertiesToStringify = Math.min(keyLength, maximumBreadth);
             if (isTypedArrayWithEntries(value)) {
-              res += stringifyTypedArray(value, join, maximumBreadth);
+              res += stringifyTypedArray(value, join2, maximumBreadth);
               keys = keys.slice(value.length);
               maximumPropertiesToStringify -= value.length;
-              separator = join;
+              separator = join2;
             }
             if (deterministic) {
               keys = sort(keys, comparator);
@@ -27656,13 +27656,13 @@ ${indentation}`;
               const tmp = stringifyIndent(key2, value[key2], stack, spacer, indentation);
               if (tmp !== void 0) {
                 res += `${separator}${strEscape(key2)}: ${tmp}`;
-                separator = join;
+                separator = join2;
               }
             }
             if (keyLength > maximumBreadth) {
               const removedKeys = keyLength - maximumBreadth;
               res += `${separator}"...": "${getItemCount(removedKeys)} not stringified"`;
-              separator = join;
+              separator = join2;
             }
             if (separator !== "") {
               res = `
@@ -35022,7 +35022,7 @@ var require_formatting = __commonJS({
       } else
         base.text = `${base.text}${next}`;
     };
-    var join = (fragments, separator) => {
+    var join2 = (fragments, separator) => {
       const result = new FmtString("");
       result.entities = [];
       const iter = fragments[Symbol.iterator]();
@@ -35039,7 +35039,7 @@ var require_formatting = __commonJS({
         delete result.entities;
       return result;
     };
-    exports.join = join;
+    exports.join = join2;
     function createFmt(kind, opts) {
       return function fmt(parts, ...items) {
         var _a;
@@ -42927,6 +42927,9 @@ var import_telegraf = __toESM(require_lib6(), 1);
 var import_filters = __toESM(require_filters2(), 1);
 var import_node_cron = __toESM(require_node_cron(), 1);
 import mongoose7 from "mongoose";
+import { createReadStream } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 
 // src/bot/models/user.ts
 import mongoose2 from "mongoose";
@@ -43050,6 +43053,17 @@ var queueSchema = new mongoose6.Schema({
 var Queue = mongoose6.model("Queue", queueSchema);
 
 // src/bot/bot.ts
+var __filename2 = fileURLToPath(import.meta.url);
+var __dirname2 = dirname(__filename2);
+var TUTORIAL_IMAGE_PATH = join(__dirname2, "../assets/tutorial_profile_link.jpeg");
+var TUTORIAL_CAPTION = '\u{1F4CC} How to copy your TikTok profile link:\n\n1. Open TikTok profile \u{1F464}\n2. Tap Share button \u2197\uFE0F\n3. Tap "Copy Link" \u{1F517}\n4. Paste link here \u2728';
+async function sendTutorialImage(bot, chatId, caption) {
+  try {
+    await bot.telegram.sendPhoto(chatId, { source: createReadStream(TUTORIAL_IMAGE_PATH) }, { caption: caption ?? TUTORIAL_CAPTION });
+  } catch (err) {
+    console.error(`[TUTORIAL_IMAGE_SEND_FAILED] chatId=${chatId}: ${err.message}`);
+  }
+}
 async function cleanupStaleQueue() {
   const now = /* @__PURE__ */ new Date();
   const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60 * 1e3);
@@ -43916,6 +43930,7 @@ Drop your TikTok cut price link below to start swapping \u{1F517}\u2728`,
       "\u{1F44B} Weh selamat datang ke *CutSquad*!\n\nBot ni untuk swap TikTok cut price links \u2014 kau cut gue, gue cut kau! \u{1F501}\n\nHantar link profile TikTok kau \u{1F447}\n_(contoh: https://www.tiktok.com/@username)_",
       { parse_mode: "Markdown" }
     );
+    await sendTutorialImage(bot, ctx.from.id);
   });
   bot.command("balance", async (ctx) => {
     const user = await User.findOne({ telegramId: ctx.from.id });
@@ -44631,7 +44646,8 @@ https://www.tiktok.com/@yourusername`
         const rawUsername = await extractTikTokUsername(text);
         if (!rawUsername) {
           console.warn(`[INVALID_PROFILE_INPUT] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
-          await ctx.reply("\u274C Invalid TikTok profile link.\n\nPlease send a valid TikTok username or profile link \u{1F440}\n\nExample: https://www.tiktok.com/@username");
+          await ctx.reply("\u274C That looks like the wrong TikTok link \u{1F635}\u200D\u{1F4AB}\n\nPlease follow this tutorial to copy the correct link \u{1F447}\u2728");
+          await sendTutorialImage(bot, telegramId);
           return;
         }
         console.log(`[TIKTOK_USERNAME_PARSED] telegramId=${telegramId} raw="${text.slice(0, 100)}" \u2192 username="${rawUsername}"`);
@@ -44724,7 +44740,8 @@ https://www.tiktok.com/@yourusername`
       const rawUsername = await extractTikTokUsername(text);
       if (!rawUsername) {
         console.warn(`[INVALID_PROFILE_INPUT] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
-        await ctx.reply("\u274C Invalid TikTok profile link.\n\nPlease send a valid TikTok username or profile link \u{1F440}\n\nExample: https://www.tiktok.com/@username");
+        await ctx.reply("\u274C That looks like the wrong TikTok link \u{1F635}\u200D\u{1F4AB}\n\nPlease follow this tutorial to copy the correct link \u{1F447}\u2728");
+        await sendTutorialImage(bot, telegramId);
         return;
       }
       console.log(`[TIKTOK_USERNAME_PARSED] telegramId=${telegramId} raw="${text.slice(0, 100)}" \u2192 username="${rawUsername}"`);

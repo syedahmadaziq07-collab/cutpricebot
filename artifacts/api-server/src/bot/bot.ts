@@ -2,12 +2,34 @@ import mongoose from "mongoose";
 import { Telegraf, Markup } from "telegraf";
 import { message } from "telegraf/filters";
 import { schedule } from "node-cron";
+import { createReadStream } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import { User } from "./models/user";
 import { Match } from "./models/match";
 import { MatchHistory } from "./models/matchHistory";
 import { Referral } from "./models/referral";
 import { Queue } from "./models/queue";
 import { logger } from "../lib/logger";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const TUTORIAL_IMAGE_PATH = join(__dirname, "../assets/tutorial_profile_link.jpeg");
+
+const TUTORIAL_CAPTION =
+  "📌 How to copy your TikTok profile link:\n\n" +
+  "1. Open TikTok profile 👤\n" +
+  "2. Tap Share button ↗️\n" +
+  "3. Tap \"Copy Link\" 🔗\n" +
+  "4. Paste link here ✨";
+
+async function sendTutorialImage(bot: Telegraf, chatId: number, caption?: string): Promise<void> {
+  try {
+    await bot.telegram.sendPhoto(chatId, { source: createReadStream(TUTORIAL_IMAGE_PATH) }, { caption: caption ?? TUTORIAL_CAPTION });
+  } catch (err) {
+    console.error(`[TUTORIAL_IMAGE_SEND_FAILED] chatId=${chatId}: ${(err as Error).message}`);
+  }
+}
 
 export async function cleanupStaleQueue(): Promise<void> {
   const now = new Date();
@@ -1017,6 +1039,7 @@ export function createBot(): Telegraf {
       "👋 Weh selamat datang ke *CutSquad*!\n\nBot ni untuk swap TikTok cut price links — kau cut gue, gue cut kau! 🔁\n\nHantar link profile TikTok kau 👇\n_(contoh: https://www.tiktok.com/@username)_",
       { parse_mode: "Markdown" },
     );
+    await sendTutorialImage(bot, ctx.from.id);
   });
 
   bot.command("balance", async (ctx) => {
@@ -1762,7 +1785,8 @@ export function createBot(): Telegraf {
         const rawUsername = await extractTikTokUsername(text);
         if (!rawUsername) {
           console.warn(`[INVALID_PROFILE_INPUT] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
-          await ctx.reply("❌ Invalid TikTok profile link.\n\nPlease send a valid TikTok username or profile link 👀\n\nExample: https://www.tiktok.com/@username");
+          await ctx.reply("❌ That looks like the wrong TikTok link 😵‍💫\n\nPlease follow this tutorial to copy the correct link 👇✨");
+          await sendTutorialImage(bot, telegramId);
           return;
         }
         console.log(`[TIKTOK_USERNAME_PARSED] telegramId=${telegramId} raw="${text.slice(0, 100)}" → username="${rawUsername}"`);
@@ -1848,7 +1872,8 @@ export function createBot(): Telegraf {
       const rawUsername = await extractTikTokUsername(text);
       if (!rawUsername) {
         console.warn(`[INVALID_PROFILE_INPUT] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
-        await ctx.reply("❌ Invalid TikTok profile link.\n\nPlease send a valid TikTok username or profile link 👀\n\nExample: https://www.tiktok.com/@username");
+        await ctx.reply("❌ That looks like the wrong TikTok link 😵‍💫\n\nPlease follow this tutorial to copy the correct link 👇✨");
+        await sendTutorialImage(bot, telegramId);
         return;
       }
       console.log(`[TIKTOK_USERNAME_PARSED] telegramId=${telegramId} raw="${text.slice(0, 100)}" → username="${rawUsername}"`);
