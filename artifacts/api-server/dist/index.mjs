@@ -43217,9 +43217,7 @@ var lastBroadcastStats = { total: 0, eligible: 0, sent: 0, skippedSelf: 0, skipp
 async function broadcastCutLinkNotification(bot, senderTikTok, senderTelegramId) {
   console.log(`[CUSTOMER_BROADCAST_FUNCTION_CALLED] senderTikTok=@${senderTikTok} senderTelegramId=${senderTelegramId}`);
   const now = /* @__PURE__ */ new Date();
-  const allUsers = await User.find({
-    tiktokUsername: { $nin: ["__pending__", ""] }
-  }).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
+  const allUsers = await User.find({}).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
   console.log(`[CUSTOMER_BROADCAST_TOTAL_USERS_FOUND] count=${allUsers.length} sender=@${senderTikTok}`);
   let sentCount = 0;
   let skippedSelf = 0;
@@ -44128,13 +44126,12 @@ Candidates found: ${candidates.length}`);
       return;
     }
     const now = /* @__PURE__ */ new Date();
-    const allUsers = await User.find({
-      tiktokUsername: { $nin: ["__pending__", ""] }
-    }).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
+    const allStartedUsers = await User.find({}).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
+    const registeredUsers = allStartedUsers.filter((u) => u.tiktokUsername && u.tiktokUsername !== "__pending__" && u.tiktokUsername !== "");
     let eligible = 0;
     let skippedBanned = 0;
     let skippedCooldown = 0;
-    for (const u of allUsers) {
+    for (const u of allStartedUsers) {
       if (u.isBanned) {
         skippedBanned++;
         continue;
@@ -44149,8 +44146,9 @@ Candidates found: ${candidates.length}`);
     const lastTs = lastBroadcastStats.ts ? new Date(lastBroadcastStats.ts).toLocaleString("en-MY", { timeZone: "Asia/Kuala_Lumpur", hour12: false }) : "Never";
     const msg = `\u{1F4CA} *Broadcast Debug*
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-*Current registered users:* ${allUsers.length}
-*Eligible (not banned/cooldown):* ${eligible}
+*Total users who pressed /start:* ${allStartedUsers.length}
+*Users with TikTok profile registered:* ${registeredUsers.length}
+*Eligible broadcast receivers:* ${eligible}
 *Skipped \u2014 banned:* ${skippedBanned}
 *Skipped \u2014 cooldown:* ${skippedCooldown}
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
@@ -44163,7 +44161,7 @@ Candidates found: ${candidates.length}`);
 \u2022 Skipped banned: ${lastBroadcastStats.skippedBanned}
 \u2022 Skipped cooldown: ${lastBroadcastStats.skippedCooldown}
 \u2022 Time: ${lastTs} MYT`;
-    console.log(`[DEBUG_BROADCAST] Admin telegramId=${ctx.from.id} checked broadcast stats. totalUsers=${allUsers.length} eligible=${eligible}`);
+    console.log(`[DEBUG_BROADCAST] Admin telegramId=${ctx.from.id} \u2014 started=${allStartedUsers.length} registered=${registeredUsers.length} eligible=${eligible}`);
     await ctx.reply(msg, { parse_mode: "Markdown" });
   });
   bot.command("reset_user", async (ctx) => {

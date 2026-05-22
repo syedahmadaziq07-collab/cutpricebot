@@ -232,9 +232,8 @@ async function broadcastCutLinkNotification(
   console.log(`[CUSTOMER_BROADCAST_FUNCTION_CALLED] senderTikTok=@${senderTikTok} senderTelegramId=${senderTelegramId}`);
 
   const now = new Date();
-  const allUsers = await User.find({
-    tiktokUsername: { $nin: ["__pending__", ""] },
-  }).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
+  // Send to ALL users who have ever pressed /start — including those who haven't registered TikTok yet
+  const allUsers = await User.find({}).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
 
   console.log(`[CUSTOMER_BROADCAST_TOTAL_USERS_FOUND] count=${allUsers.length} sender=@${senderTikTok}`);
 
@@ -1234,15 +1233,15 @@ export function createBot(): Telegraf {
     if (!getAdminIds().includes(ctx.from.id)) { await ctx.reply("🚫 Unauthorized."); return; }
 
     const now = new Date();
-    const allUsers = await User.find({
-      tiktokUsername: { $nin: ["__pending__", ""] },
-    }).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
+    // All users who ever pressed /start
+    const allStartedUsers = await User.find({}).select("telegramId tiktokUsername isBanned suspendedUntil cancelCooldownUntil");
+    const registeredUsers = allStartedUsers.filter(u => u.tiktokUsername && u.tiktokUsername !== "__pending__" && u.tiktokUsername !== "");
 
     let eligible = 0;
     let skippedBanned = 0;
     let skippedCooldown = 0;
 
-    for (const u of allUsers) {
+    for (const u of allStartedUsers) {
       if (u.isBanned) { skippedBanned++; continue; }
       const onCooldown = (u.suspendedUntil && u.suspendedUntil > now) || (u.cancelCooldownUntil && u.cancelCooldownUntil > now);
       if (onCooldown) { skippedCooldown++; continue; }
@@ -1256,8 +1255,9 @@ export function createBot(): Telegraf {
     const msg =
       `📊 *Broadcast Debug*\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
-      `*Current registered users:* ${allUsers.length}\n` +
-      `*Eligible (not banned/cooldown):* ${eligible}\n` +
+      `*Total users who pressed /start:* ${allStartedUsers.length}\n` +
+      `*Users with TikTok profile registered:* ${registeredUsers.length}\n` +
+      `*Eligible broadcast receivers:* ${eligible}\n` +
       `*Skipped — banned:* ${skippedBanned}\n` +
       `*Skipped — cooldown:* ${skippedCooldown}\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
@@ -1271,7 +1271,7 @@ export function createBot(): Telegraf {
       `• Skipped cooldown: ${lastBroadcastStats.skippedCooldown}\n` +
       `• Time: ${lastTs} MYT`;
 
-    console.log(`[DEBUG_BROADCAST] Admin telegramId=${ctx.from.id} checked broadcast stats. totalUsers=${allUsers.length} eligible=${eligible}`);
+    console.log(`[DEBUG_BROADCAST] Admin telegramId=${ctx.from.id} — started=${allStartedUsers.length} registered=${registeredUsers.length} eligible=${eligible}`);
     await ctx.reply(msg, { parse_mode: "Markdown" });
   });
 
