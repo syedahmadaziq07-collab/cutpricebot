@@ -331,32 +331,33 @@ async function issueNoResponseStrike(bot: Telegraf, inactivePartnerId: number): 
 
   console.log(`[NO_RESPONSE_STRIKE] telegramId=${inactivePartnerId} — strike ${newCount}/3 (window ${windowExpired ? "reset" : "active"}).`);
 
-  if (newCount === 1) {
-    await User.updateOne({ telegramId: inactivePartnerId }, baseUpdate);
+  if (newCount >= 3) {
+    // 3rd no-response → permanent ban
+    await User.updateOne(
+      { telegramId: inactivePartnerId },
+      { ...baseUpdate, isBanned: true, state: "idle", pendingLink: null, activeMatchId: null },
+    );
+    console.log(`[NO_RESPONSE_PERMANENT_BAN] telegramId=${inactivePartnerId} — permanently banned after ${newCount} no-response strikes.`);
     try {
       await bot.telegram.sendMessage(
         inactivePartnerId,
-        `⚠️ Hey! You didn't respond to your partner's proof in time.\n\nStrike: 1/3\n\nIf you fail to approve again, your account will be banned for 24 hours 🚫`,
-      );
-    } catch { /* user may have blocked bot */ }
-  } else if (newCount === 2) {
-    const cooldownUntil = new Date(now.getTime() + NO_RESPONSE_COOLDOWN_30M_MS);
-    await User.updateOne({ telegramId: inactivePartnerId }, { ...baseUpdate, cancelCooldownUntil: cooldownUntil });
-    console.log(`[NO_RESPONSE_COOLDOWN_30M] telegramId=${inactivePartnerId} placed on 30-min cooldown until ${cooldownUntil.toISOString()}.`);
-    try {
-      await bot.telegram.sendMessage(
-        inactivePartnerId,
-        `⚠️ Hey! You didn't respond to your partner's proof in time.\n\nStrike: 2/3\n\n⏳ You've been placed on a 30-minute cooldown.\n\nIf you fail to approve again, your account will be banned for 24 hours 🚫`,
+        `🚫 You've been *permanently banned*.\n\nReason: Repeated failure to respond to partner proof.\n\nStrike: ${newCount}/3`,
+        { parse_mode: "Markdown" },
       );
     } catch { /* user may have blocked bot */ }
   } else {
-    const cooldownUntil = new Date(now.getTime() + NO_RESPONSE_24H_MS);
-    await User.updateOne({ telegramId: inactivePartnerId }, { ...baseUpdate, cancelCooldownUntil: cooldownUntil });
-    console.log(`[NO_RESPONSE_COOLDOWN_24H] telegramId=${inactivePartnerId} placed on 24h cooldown until ${cooldownUntil.toISOString()}.`);
+    // 1st and 2nd no-response → 24h ban
+    const banUntil = new Date(now.getTime() + NO_RESPONSE_24H_MS);
+    await User.updateOne(
+      { telegramId: inactivePartnerId },
+      { ...baseUpdate, cancelCooldownUntil: banUntil, state: "idle", pendingLink: null, activeMatchId: null },
+    );
+    console.log(`[NO_RESPONSE_24H_BAN] telegramId=${inactivePartnerId} — 24h ban applied (strike ${newCount}/3) until ${banUntil.toISOString()}.`);
     try {
       await bot.telegram.sendMessage(
         inactivePartnerId,
-        `⚠️ Hey! You didn't respond to your partner's proof in time.\n\nStrike: ${newCount}/3\n\n🚫 You've been placed on a 24-hour cooldown for repeated non-responses.`,
+        `⚠️ You didn't respond to your partner's proof in time.\n\nStrike: ${newCount}/3\n\n🚫 You've been banned for *24 hours*.\n\n• 1st no-response → 24h ban 🚫\n• 2nd no-response → 24h ban 🚫\n• 3rd no-response → permanent ban`,
+        { parse_mode: "Markdown" },
       );
     } catch { /* user may have blocked bot */ }
   }
@@ -399,7 +400,7 @@ async function handleProofTimeout(
   try {
     await bot.telegram.sendMessage(
       proofOwnerId,
-      `⏰ Your partner went missing 😭\n\nNo response received within 4 minutes.\n\nSearching for a new partner for you automatically 🔍✨`,
+      `⏰ Your cut buddy didn't respond in time 😵‍💫\n\nNo worries — you can drop a new link now to get rematched 👇✨\n\n⚠️ Your partner has received a strike.\n\n• 1st no-response → 24h ban 🚫\n• 2nd no-response → 24h ban 🚫\n• 3rd no-response → permanent ban`,
     );
   } catch { /* user may have blocked bot */ }
 
@@ -429,7 +430,7 @@ async function handleMatchExpiry(
   if (!match || match.status !== "active") return;
 
   await Match.updateOne({ _id: matchId }, { status: "expired" });
-  const expireMsg = "⏰ 4 minit dah habis! Partner tak respond.\n\nSubmit link baru untuk rematch k 👇";
+  const expireMsg = "⏰ Your cut buddy didn't respond in time 😵‍💫\n\nNo worries — you can drop a new link now to get rematched 👇✨";
 
   for (const uid of [user1Id, user2Id]) {
     const user = await User.findOne({ telegramId: uid });
