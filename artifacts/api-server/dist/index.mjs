@@ -43153,6 +43153,12 @@ async function extractTikTokUsername(input) {
 function normalizeTikTokUsername(username) {
   return username.toLowerCase().trim();
 }
+function isTikTokCutLink(input) {
+  const trimmed = input.trim();
+  if (/https?:\/\/vt\.tiktok\.com\//i.test(trimmed)) return true;
+  if (/https?:\/\/(?:www\.)?tiktok\.com\/t\//i.test(trimmed)) return true;
+  return false;
+}
 function isValidTikTokLink(url) {
   return /(?:https?:\/\/)?(?:www\.)?(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\//i.test(url);
 }
@@ -43879,6 +43885,7 @@ Drop your TikTok cut price link below to start swapping \u{1F517}\u2728`,
       },
       { upsert: true, new: true }
     );
+    console.log(`[NEW_USER_AWAITING_PROFILE] telegramId=${telegramId} (@${telegramUsername || "no_username"}) \u2014 state set to awaiting_tiktok_profile.`);
     if (isNewUser) {
       const joinedAt = (/* @__PURE__ */ new Date()).toLocaleString("en-MY", {
         timeZone: "Asia/Kuala_Lumpur",
@@ -44550,9 +44557,24 @@ Take a quick look below and make sure everything's valid \u{1F440}\u2728`,
     if (!user || user.tiktokUsername === "__pending__") {
       if (user?.state === "awaiting_tiktok_profile") {
         console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
+        if (isTikTokCutLink(text)) {
+          console.log(`[CUT_LINK_BLOCKED_DURING_REGISTRATION] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
+          await ctx.reply(
+            `Oops \u{1F62D}
+
+Before you can swap cut links, please register your TikTok profile first \u{1F440}\u2728
+
+Send your TikTok username or profile link below:
+
+Examples:
+@yourusername
+https://www.tiktok.com/@yourusername`
+          );
+          return;
+        }
         const rawUsername = await extractTikTokUsername(text);
         if (!rawUsername) {
-          console.warn(`[INVALID_TIKTOK_PROFILE_LINK] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
+          console.warn(`[INVALID_PROFILE_INPUT] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
           await ctx.reply("\u274C Invalid TikTok profile link.\n\nPlease send a valid TikTok username or profile link \u{1F440}\n\nExample: https://www.tiktok.com/@username");
           return;
         }
@@ -44574,6 +44596,7 @@ Take a quick look below and make sure everything's valid \u{1F440}\u2728`,
           { tiktokUsername: username, tiktokProfileLink: text, telegramUsername: ctx.from.username ?? "", state: "awaiting_cut_link", tiktokUsernameLocked: true, tiktokLockedAt: /* @__PURE__ */ new Date() }
         );
         console.log(`[TIKTOK_USERNAME_LOCKED] telegramId=${telegramId} permanently locked to "@${username}".`);
+        console.log(`[TIKTOK_PROFILE_REGISTERED] telegramId=${telegramId} \u2014 registered TikTok username "@${username}".`);
         if (pendingRef) {
           const referrer = await User.findOne({ referralCode: pendingRef });
           if (referrer && referrer.telegramId !== telegramId) {
@@ -44627,9 +44650,24 @@ Locked username: @${user.tiktokUsername}`);
         }
         return;
       }
+      if (isTikTokCutLink(text)) {
+        console.log(`[CUT_LINK_BLOCKED_DURING_REGISTRATION] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
+        await ctx.reply(
+          `Oops \u{1F62D}
+
+Before you can swap cut links, please register your TikTok profile first \u{1F440}\u2728
+
+Send your TikTok username or profile link below:
+
+Examples:
+@yourusername
+https://www.tiktok.com/@yourusername`
+        );
+        return;
+      }
       const rawUsername = await extractTikTokUsername(text);
       if (!rawUsername) {
-        console.warn(`[INVALID_TIKTOK_PROFILE_LINK] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
+        console.warn(`[INVALID_PROFILE_INPUT] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
         await ctx.reply("\u274C Invalid TikTok profile link.\n\nPlease send a valid TikTok username or profile link \u{1F440}\n\nExample: https://www.tiktok.com/@username");
         return;
       }
@@ -44646,6 +44684,7 @@ Locked username: @${user.tiktokUsername}`);
       }
       await User.updateOne({ telegramId }, { tiktokUsername: username, tiktokProfileLink: text, state: "awaiting_cut_link", tiktokUsernameLocked: true, tiktokLockedAt: /* @__PURE__ */ new Date() });
       console.log(`[TIKTOK_USERNAME_LOCKED] telegramId=${telegramId} permanently locked to "@${username}".`);
+      console.log(`[TIKTOK_PROFILE_REGISTERED] telegramId=${telegramId} \u2014 registered TikTok username "@${username}".`);
       await ctx.reply(`Welcome @${username}! \u2705
 
 Now send your TikTok cut price link to start swapping \u{1F517}\u2728`);

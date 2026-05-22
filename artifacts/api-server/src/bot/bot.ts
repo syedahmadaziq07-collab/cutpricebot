@@ -152,6 +152,17 @@ function normalizeTikTokUsername(username: string): string {
   return username.toLowerCase().trim();
 }
 
+// Detects TikTok cut/short links that must be blocked during profile registration.
+// vt.tiktok.com short links and tiktok.com/t/xxx are cut-price link formats,
+// NOT profile links — following their redirects would yield video URLs which
+// extractTikTokUsername would incorrectly parse as a username.
+function isTikTokCutLink(input: string): boolean {
+  const trimmed = input.trim();
+  if (/https?:\/\/vt\.tiktok\.com\//i.test(trimmed)) return true;
+  if (/https?:\/\/(?:www\.)?tiktok\.com\/t\//i.test(trimmed)) return true;
+  return false;
+}
+
 function isValidTikTokLink(url: string): boolean {
   return /(?:https?:\/\/)?(?:www\.)?(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)\//i.test(url);
 }
@@ -960,6 +971,7 @@ export function createBot(): Telegraf {
       },
       { upsert: true, new: true },
     );
+    console.log(`[NEW_USER_AWAITING_PROFILE] telegramId=${telegramId} (@${telegramUsername || "no_username"}) — state set to awaiting_tiktok_profile.`);
 
     // Admin notification — only for brand-new users, never for returning __pending__ users
     if (isNewUser) {
@@ -1667,9 +1679,19 @@ export function createBot(): Telegraf {
     if (!user || user.tiktokUsername === "__pending__") {
       if (user?.state === "awaiting_tiktok_profile") {
         console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
+
+        // Block cut/short links — they are not TikTok profile links
+        if (isTikTokCutLink(text)) {
+          console.log(`[CUT_LINK_BLOCKED_DURING_REGISTRATION] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
+          await ctx.reply(
+            `Oops 😭\n\nBefore you can swap cut links, please register your TikTok profile first 👀✨\n\nSend your TikTok username or profile link below:\n\nExamples:\n@yourusername\nhttps://www.tiktok.com/@yourusername`,
+          );
+          return;
+        }
+
         const rawUsername = await extractTikTokUsername(text);
         if (!rawUsername) {
-          console.warn(`[INVALID_TIKTOK_PROFILE_LINK] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
+          console.warn(`[INVALID_PROFILE_INPUT] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
           await ctx.reply("❌ Invalid TikTok profile link.\n\nPlease send a valid TikTok username or profile link 👀\n\nExample: https://www.tiktok.com/@username");
           return;
         }
@@ -1695,6 +1717,7 @@ export function createBot(): Telegraf {
           { tiktokUsername: username, tiktokProfileLink: text, telegramUsername: ctx.from.username ?? "", state: "awaiting_cut_link", tiktokUsernameLocked: true, tiktokLockedAt: new Date() },
         );
         console.log(`[TIKTOK_USERNAME_LOCKED] telegramId=${telegramId} permanently locked to "@${username}".`);
+        console.log(`[TIKTOK_PROFILE_REGISTERED] telegramId=${telegramId} — registered TikTok username "@${username}".`);
 
         if (pendingRef) {
           const referrer = await User.findOne({ referralCode: pendingRef });
@@ -1743,9 +1766,18 @@ export function createBot(): Telegraf {
         return;
       }
 
+      // Block cut/short links — they are not TikTok profile links
+      if (isTikTokCutLink(text)) {
+        console.log(`[CUT_LINK_BLOCKED_DURING_REGISTRATION] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
+        await ctx.reply(
+          `Oops 😭\n\nBefore you can swap cut links, please register your TikTok profile first 👀✨\n\nSend your TikTok username or profile link below:\n\nExamples:\n@yourusername\nhttps://www.tiktok.com/@yourusername`,
+        );
+        return;
+      }
+
       const rawUsername = await extractTikTokUsername(text);
       if (!rawUsername) {
-        console.warn(`[INVALID_TIKTOK_PROFILE_LINK] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
+        console.warn(`[INVALID_PROFILE_INPUT] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
         await ctx.reply("❌ Invalid TikTok profile link.\n\nPlease send a valid TikTok username or profile link 👀\n\nExample: https://www.tiktok.com/@username");
         return;
       }
@@ -1765,6 +1797,7 @@ export function createBot(): Telegraf {
 
       await User.updateOne({ telegramId }, { tiktokUsername: username, tiktokProfileLink: text, state: "awaiting_cut_link", tiktokUsernameLocked: true, tiktokLockedAt: new Date() });
       console.log(`[TIKTOK_USERNAME_LOCKED] telegramId=${telegramId} permanently locked to "@${username}".`);
+      console.log(`[TIKTOK_PROFILE_REGISTERED] telegramId=${telegramId} — registered TikTok username "@${username}".`);
       await ctx.reply(`Welcome @${username}! ✅\n\nNow send your TikTok cut price link to start swapping 🔗✨`);
       return;
     }
