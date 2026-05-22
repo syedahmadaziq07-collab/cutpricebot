@@ -43138,7 +43138,9 @@ var MAX_CUT_BALANCE = 20;
 var COOLDOWN_MS = 24 * 60 * 60 * 1e3;
 var matchTimers = /* @__PURE__ */ new Map();
 var proofTimers = /* @__PURE__ */ new Map();
-var NO_RESPONSE_TIMEOUT_MS = 4 * 60 * 1e3;
+var proofReminderTimers = /* @__PURE__ */ new Map();
+var NO_RESPONSE_TIMEOUT_MS = 10 * 60 * 1e3;
+var NO_RESPONSE_REMINDER_MS = 8 * 60 * 1e3;
 var NO_RESPONSE_COOLDOWN_30M_MS = 30 * 60 * 1e3;
 var NO_RESPONSE_24H_MS = 24 * 60 * 60 * 1e3;
 function generateReferralCode() {
@@ -43375,6 +43377,11 @@ async function handleProofTimeout(bot, matchId, proofOwnerId, inactivePartnerId)
     matchTimers.delete(matchId);
   }
   proofTimers.delete(`proof:${matchId}:${proofOwnerId}`);
+  const expiredReminder = proofReminderTimers.get(`proof_reminder:${matchId}:${proofOwnerId}`);
+  if (expiredReminder) {
+    clearTimeout(expiredReminder);
+    proofReminderTimers.delete(`proof_reminder:${matchId}:${proofOwnerId}`);
+  }
   const proofOwnerUser = await User.findOne({ telegramId: proofOwnerId }).select("pendingLink tiktokUsername");
   const proofOwnerLink = proofOwnerUser?.pendingLink ?? match.link1 === void 0 ? "" : match.user1Id === proofOwnerId ? match.link1 : match.link2;
   console.log(`[NO_RESPONSE_TIMEOUT] telegramId=${proofOwnerId} \u2014 requeueing innocent proof owner.`);
@@ -43422,6 +43429,12 @@ async function handleMatchExpiry(bot, matchId, user1Id, user2Id) {
     if (existingProofTimer) {
       clearTimeout(existingProofTimer);
       proofTimers.delete(proofTimerKey);
+    }
+    const reminderKey = `proof_reminder:${matchId}:${uid}`;
+    const existingReminder = proofReminderTimers.get(reminderKey);
+    if (existingReminder) {
+      clearTimeout(existingReminder);
+      proofReminderTimers.delete(reminderKey);
     }
     await Queue.deleteOne({ telegramId: uid });
     console.log(`[QUEUE_REMOVE] telegramId=${uid} removed from queue (match expired).`);
@@ -43649,6 +43662,12 @@ async function checkAndCompleteMatch(bot, matchId) {
     if (pt) {
       clearTimeout(pt);
       proofTimers.delete(ptKey);
+    }
+    const rKey = `proof_reminder:${matchId}:${uid}`;
+    const rt = proofReminderTimers.get(rKey);
+    if (rt) {
+      clearTimeout(rt);
+      proofReminderTimers.delete(rKey);
     }
   }
   await Match.updateOne({ _id: matchId }, { status: "completed" });
@@ -44611,7 +44630,24 @@ Take a quick look below and make sure everything's valid \u{1F440}\u2728`,
       await handleProofTimeout(bot, matchId, telegramId, partnerId);
     }, NO_RESPONSE_TIMEOUT_MS);
     proofTimers.set(proofTimerKey, proofTimer);
-    console.log(`[NO_RESPONSE_TIMEOUT_STARTED] matchId=${matchId} proofOwnerId=${telegramId} inactivePartnerId=${partnerId} \u2014 4-min timer started.`);
+    console.log(`[NO_RESPONSE_TIMEOUT_STARTED] matchId=${matchId} proofOwnerId=${telegramId} inactivePartnerId=${partnerId} \u2014 10-min timer started.`);
+    const reminderKey = `proof_reminder:${matchId}:${telegramId}`;
+    if (proofReminderTimers.has(reminderKey)) clearTimeout(proofReminderTimers.get(reminderKey));
+    const reminderTimer = setTimeout(async () => {
+      proofReminderTimers.delete(reminderKey);
+      try {
+        const stillActive = await Match.findOne({ _id: matchId, status: "active" });
+        if (!stillActive) return;
+        await bot.telegram.sendMessage(
+          partnerId,
+          "\u23F0 Your cut buddy is waiting for your response \u{1F440}\u2728\n\nPlease approve or reject the proof before the timer ends \u{1F91D}"
+        );
+        console.log(`[PROOF_REMINDER_SENT] matchId=${matchId} inactivePartnerId=${partnerId}`);
+      } catch (err) {
+        console.error(`[PROOF_REMINDER_FAILED] matchId=${matchId} partnerId=${partnerId}: ${err.message}`);
+      }
+    }, NO_RESPONSE_REMINDER_MS);
+    proofReminderTimers.set(reminderKey, reminderTimer);
   });
   bot.on((0, import_filters.message)("text"), async (ctx) => {
     const telegramId = ctx.from.id;
@@ -45130,6 +45166,12 @@ Example:
     if (existingProofTimer) {
       clearTimeout(existingProofTimer);
       proofTimers.delete(ptKey);
+    }
+    const rKey = `proof_reminder:${timerId}:${proofOwnerId}`;
+    const existingReminder = proofReminderTimers.get(rKey);
+    if (existingReminder) {
+      clearTimeout(existingReminder);
+      proofReminderTimers.delete(rKey);
     }
     const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);
     await User.updateOne(

@@ -130,8 +130,10 @@ const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 const matchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const proofTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const proofReminderTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-const NO_RESPONSE_TIMEOUT_MS = 4 * 60 * 1000;
+const NO_RESPONSE_TIMEOUT_MS = 10 * 60 * 1000;
+const NO_RESPONSE_REMINDER_MS = 8 * 60 * 1000;
 const NO_RESPONSE_COOLDOWN_30M_MS = 30 * 60 * 1000;
 const NO_RESPONSE_24H_MS = 24 * 60 * 60 * 1000;
 
@@ -426,6 +428,8 @@ async function handleProofTimeout(
   if (existingMatchTimer) { clearTimeout(existingMatchTimer); matchTimers.delete(matchId); }
 
   proofTimers.delete(`proof:${matchId}:${proofOwnerId}`);
+  const expiredReminder = proofReminderTimers.get(`proof_reminder:${matchId}:${proofOwnerId}`);
+  if (expiredReminder) { clearTimeout(expiredReminder); proofReminderTimers.delete(`proof_reminder:${matchId}:${proofOwnerId}`); }
 
   // Requeue the innocent proof owner with their original FIFO priority
   const proofOwnerUser = await User.findOne({ telegramId: proofOwnerId }).select("pendingLink tiktokUsername");
@@ -473,10 +477,13 @@ async function handleMatchExpiry(
     if (!user) continue;
     const activeStates = ["in_match", "awaiting_proof_account_selection", "awaiting_proof_cut_username", "awaiting_proof", "awaiting_partner_approval"];
     if (!activeStates.includes(user.state)) continue;
-    // Clear any pending proof timer for this user in this match
+    // Clear any pending proof timer and reminder for this user in this match
     const proofTimerKey = `proof:${matchId}:${uid}`;
     const existingProofTimer = proofTimers.get(proofTimerKey);
     if (existingProofTimer) { clearTimeout(existingProofTimer); proofTimers.delete(proofTimerKey); }
+    const reminderKey = `proof_reminder:${matchId}:${uid}`;
+    const existingReminder = proofReminderTimers.get(reminderKey);
+    if (existingReminder) { clearTimeout(existingReminder); proofReminderTimers.delete(reminderKey); }
     await Queue.deleteOne({ telegramId: uid });
     console.log(`[QUEUE_REMOVE] telegramId=${uid} removed from queue (match expired).`);
     await bot.telegram.sendMessage(uid, expireMsg);
@@ -747,11 +754,14 @@ async function checkAndCompleteMatch(bot: Telegraf, matchId: string): Promise<vo
     clearTimeout(existingTimer);
     matchTimers.delete(timerId);
   }
-  // Clear any pending proof timers for both participants
+  // Clear any pending proof timers and reminders for both participants
   for (const uid of [match.user1Id, match.user2Id]) {
     const ptKey = `proof:${matchId}:${uid}`;
     const pt = proofTimers.get(ptKey);
     if (pt) { clearTimeout(pt); proofTimers.delete(ptKey); }
+    const rKey = `proof_reminder:${matchId}:${uid}`;
+    const rt = proofReminderTimers.get(rKey);
+    if (rt) { clearTimeout(rt); proofReminderTimers.delete(rKey); }
   }
 
   await Match.updateOne({ _id: matchId }, { status: "completed" });
@@ -1744,7 +1754,7 @@ export function createBot(): Telegraf {
     });
     console.log(`[PROOF_SENT_TO_PARTNER] telegramId=${telegramId} proof forwarded to partnerId=${partnerId} for matchId=${matchId}.`);
 
-    // Start 4-minute no-response timeout — if partner doesn't approve/reject, punish them
+    // Start 10-minute no-response timeout — if partner doesn't approve/reject, punish them
     const proofTimerKey = `proof:${matchId}:${telegramId}`;
     if (proofTimers.has(proofTimerKey)) clearTimeout(proofTimers.get(proofTimerKey)!);
     const proofTimer = setTimeout(async () => {
@@ -1752,7 +1762,27 @@ export function createBot(): Telegraf {
       await handleProofTimeout(bot, matchId, telegramId, partnerId);
     }, NO_RESPONSE_TIMEOUT_MS);
     proofTimers.set(proofTimerKey, proofTimer);
-    console.log(`[NO_RESPONSE_TIMEOUT_STARTED] matchId=${matchId} proofOwnerId=${telegramId} inactivePartnerId=${partnerId} — 4-min timer started.`);
+    console.log(`[NO_RESPONSE_TIMEOUT_STARTED] matchId=${matchId} proofOwnerId=${telegramId} inactivePartnerId=${partnerId} — 10-min timer started.`);
+
+    // Start 8-minute reminder — nudge the inactive partner before timeout fires
+    const reminderKey = `proof_reminder:${matchId}:${telegramId}`;
+    if (proofReminderTimers.has(reminderKey)) clearTimeout(proofReminderTimers.get(reminderKey)!);
+    const reminderTimer = setTimeout(async () => {
+      proofReminderTimers.delete(reminderKey);
+      // Only send if the match is still active and partner hasn't responded yet
+      try {
+        const stillActive = await Match.findOne({ _id: matchId, status: "active" });
+        if (!stillActive) return;
+        await bot.telegram.sendMessage(
+          partnerId,
+          "⏰ Your cut buddy is waiting for your response 👀✨\n\nPlease approve or reject the proof before the timer ends 🤝",
+        );
+        console.log(`[PROOF_REMINDER_SENT] matchId=${matchId} inactivePartnerId=${partnerId}`);
+      } catch (err) {
+        console.error(`[PROOF_REMINDER_FAILED] matchId=${matchId} partnerId=${partnerId}: ${(err as Error).message}`);
+      }
+    }, NO_RESPONSE_REMINDER_MS);
+    proofReminderTimers.set(reminderKey, reminderTimer);
   });
 
   bot.on(message("text"), async (ctx) => {
@@ -2313,10 +2343,13 @@ export function createBot(): Telegraf {
     const timerId = match._id.toString();
     const existingTimer = matchTimers.get(timerId);
     if (existingTimer) { clearTimeout(existingTimer); matchTimers.delete(timerId); }
-    // Clear proof timer for the proof owner so no-response timeout doesn't fire
+    // Clear proof timer and reminder for the proof owner so no-response timeout doesn't fire
     const ptKey = `proof:${timerId}:${proofOwnerId}`;
     const existingProofTimer = proofTimers.get(ptKey);
     if (existingProofTimer) { clearTimeout(existingProofTimer); proofTimers.delete(ptKey); }
+    const rKey = `proof_reminder:${timerId}:${proofOwnerId}`;
+    const existingReminder = proofReminderTimers.get(rKey);
+    if (existingReminder) { clearTimeout(existingReminder); proofReminderTimers.delete(rKey); }
 
     // Apply 24h cooldown to the proof owner (User A — the one whose proof was rejected)
     const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);
