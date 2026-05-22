@@ -325,6 +325,13 @@ async function performStuckCleanup(bot: Telegraf): Promise<{ clearedMatches: num
 
         clearedMatches++;
         console.log(`[STUCK_MATCH_CLEARED] matchId=${timerId} telegramId=${telegramId} state=${state}`);
+
+        // Admin notification — stuck cleanup cancelled this match
+        await notifyAdminMatchCancelled(
+          bot, activeMatch.user1Id, activeMatch.user2Id,
+          `Stuck session cleanup — match was inactive for more than 30 minutes. Triggered by system auto-cleanup.`,
+          timerId,
+        );
       }
     }
 
@@ -657,6 +664,13 @@ async function handleProofTimeout(
   const expiredReminder = proofReminderTimers.get(`proof_reminder:${matchId}:${proofOwnerId}`);
   if (expiredReminder) { clearTimeout(expiredReminder); proofReminderTimers.delete(`proof_reminder:${matchId}:${proofOwnerId}`); }
 
+  // Admin notification — proof approval timeout
+  await notifyAdminMatchCancelled(
+    bot, match.user1Id, match.user2Id,
+    `Proof approval timeout — partner (ID: ${inactivePartnerId}) did not respond to proof from user (ID: ${proofOwnerId}) in time.`,
+    matchId,
+  );
+
   // Requeue the innocent proof owner with their original FIFO priority
   const proofOwnerUser = await User.findOne({ telegramId: proofOwnerId }).select("pendingLink tiktokUsername");
   const proofOwnerLink = proofOwnerUser?.pendingLink ?? match.link1 === undefined ? "" : (match.user1Id === proofOwnerId ? match.link1 : match.link2);
@@ -696,6 +710,14 @@ async function handleMatchExpiry(
   if (!match || match.status !== "active") return;
 
   await Match.updateOne({ _id: matchId }, { status: "expired" });
+
+  // Admin notification — match timer expired
+  await notifyAdminMatchCancelled(
+    bot, user1Id, user2Id,
+    "Match timer expired — 4-minute match window elapsed with no action.",
+    matchId,
+  );
+
   const expireMsg = "⏰ Your cut buddy didn't respond in time 😵‍💫\n\nNo worries — you can drop a new link now to get rematched 👇✨";
 
   for (const uid of [user1Id, user2Id]) {
@@ -722,6 +744,53 @@ async function handleMatchExpiry(
     }
   }
   matchTimers.delete(matchId);
+}
+
+// Shared helper — sends ⚠️ MATCH CANCELLED / TIMEOUT notification to all admins.
+// Wrapped in try/catch: never throws, never crashes the bot.
+async function notifyAdminMatchCancelled(
+  bot: Telegraf,
+  user1Id: number,
+  user2Id: number,
+  reason: string,
+  matchId?: string,
+): Promise<void> {
+  try {
+    const [uA, uB] = await Promise.all([
+      User.findOne({ telegramId: user1Id }).select("telegramUsername tiktokUsername"),
+      User.findOne({ telegramId: user2Id }).select("telegramUsername tiktokUsername"),
+    ]);
+    const mytime = new Date().toLocaleString("en-MY", {
+      timeZone: "Asia/Kuala_Lumpur",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      hour12: false,
+    });
+    const adminMsg =
+      `⚠️ MATCH CANCELLED / TIMEOUT\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `User A:\n` +
+      `• Telegram: @${uA?.telegramUsername || "N/A"}\n` +
+      `• TikTok: @${uA?.tiktokUsername || "N/A"}\n` +
+      `• ID: ${user1Id}\n\n` +
+      `User B:\n` +
+      `• Telegram: @${uB?.telegramUsername || "N/A"}\n` +
+      `• TikTok: @${uB?.tiktokUsername || "N/A"}\n` +
+      `• ID: ${user2Id}\n\n` +
+      `Reason:\n${reason}\n\n` +
+      `• Time: ${mytime} MYT\n` +
+      `━━━━━━━━━━━━━━━━━━`;
+    for (const adminId of getAdminIds()) {
+      try {
+        await bot.telegram.sendMessage(adminId, adminMsg);
+        console.log(`[ADMIN_MATCH_CANCELLED_NOTIFIED]${matchId ? ` matchId=${matchId}` : ""} user1=${user1Id} user2=${user2Id} reason="${reason}" notified adminId=${adminId}`);
+      } catch (err) {
+        console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED]${matchId ? ` matchId=${matchId}` : ""} cancel-notify adminId=${adminId}: ${(err as Error).message}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED]${matchId ? ` matchId=${matchId}` : ""} cancel-notify fetch error: ${(err as Error).message}`);
+  }
 }
 
 async function hasRecentMatch(userIdA: number, userIdB: number): Promise<boolean> {
@@ -2805,6 +2874,13 @@ export function createBot(): Telegraf {
         console.log(`[PARTNER_NO_LINK] telegramId=${partnerId} has no pendingLink — set to awaiting_cut_link.`);
       }
     }
+
+    // Admin notification — manual match cancellation
+    await notifyAdminMatchCancelled(
+      bot, match.user1Id, match.user2Id,
+      `Manual cancellation — user ID ${telegramId} (@${user.tiktokUsername}) cancelled the match. 24h cooldown applied.`,
+      match._id.toString(),
+    );
   });
 
   bot.action(/^approve_proof:(.+):(\d+)$/, async (ctx) => {

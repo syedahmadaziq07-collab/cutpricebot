@@ -1,0 +1,144 @@
+Audit and add admin notifications for all match result events.
+
+Goal:
+Make sure admins always receive notifications when:
+1. both users complete swap successfully
+2. proof is rejected
+3. match is cancelled or timed out
+
+━━━━━━━━━━━━━━━━━━
+CHECK EXISTING CODE FIRST
+━━━━━━━━━━━━━━━━━━
+
+Please audit current bot.ts and related match/proof handlers.
+
+Check if these admin notifications already exist:
+- swap completed notification
+- proof rejected notification
+- match cancelled notification
+- timeout notification
+
+If any already exist:
+- do not duplicate
+- only fix missing fields or broken trigger
+
+If missing:
+- add them safely
+
+━━━━━━━━━━━━━━━━━━
+1. SWAP COMPLETED ADMIN NOTIFICATION
+━━━━━━━━━━━━━━━━━━
+
+Trigger ONLY when:
+- User A proof approved
+- User B proof approved
+- swap fully completed
+
+Message to admins:
+
+✅ SWAP COMPLETED!
+━━━━━━━━━━━━━━━━━━
+User A:
+• Telegram: @{userA_telegram}
+• TikTok: @{userA_tiktok}
+• ID: {userA_id}
+
+User B:
+• Telegram: @{userB_telegram}
+• TikTok: @{userB_tiktok}
+• ID: {userB_id}
+
+• Time: {Malaysia_Time}
+━━━━━━━━━━━━━━━━━━
+Both users completed proof approval successfully 🤝✨
+
+━━━━━━━━━━━━━━━━━━
+2. PROOF REJECTED ADMIN NOTIFICATION
+━━━━━━━━━━━━━━━━━━
+
+Trigger when:
+- partner rejects proof
+
+Message to admins:
+
+❌ PROOF REJECTED!
+━━━━━━━━━━━━━━━━━━
+Rejected User:
+• Telegram: @{rejected_telegram}
+• TikTok: @{rejected_tiktok}
+• ID: {rejected_id}
+
+Rejected By:
+• Telegram: @{rejector_telegram}
+• TikTok: @{rejector_tiktok}
+• ID: {rejector_id}
+
+Reason:
+{rejectReason}
+
+• Action: 24h cooldown applied
+• Time: {Malaysia_Time}
+━━━━━━━━━━━━━━━━━━
+Proof was rejected by partner.
+
+━━━━━━━━━━━━━━━━━━
+3. MATCH CANCELLED / TIMEOUT ADMIN NOTIFICATION
+━━━━━━━━━━━━━━━━━━
+
+Trigger when:
+- match manually cancelled
+- proof approval timeout happens
+- incomplete proof timeout happens
+- stuck cleanup cancels match
+
+Message to admins:
+
+⚠️ MATCH CANCELLED / TIMEOUT
+━━━━━━━━━━━━━━━━━━
+User A:
+• Telegram: @{userA_telegram}
+• TikTok: @{userA_tiktok}
+• ID: {userA_id}
+
+User B:
+• Telegram: @{userB_telegram}
+• TikTok: @{userB_tiktok}
+• ID: {userB_id}
+
+Reason:
+{cancelReason}
+
+• Time: {Malaysia_Time}
+━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━
+REQUIREMENTS
+━━━━━━━━━━━━━━━━━━
+
+- Send only to admin IDs
+- Use Malaysia timezone: Asia/Kuala_Lumpur
+- Keep Telegram markdown safe
+- Wrap admin notification send in try/catch
+- Do not crash bot if admin notification fails
+- Do not duplicate notifications
+- Do not change matchmaking logic
+- Do not change proof approve/reject logic
+- Do not change cooldown/ban logic
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add logs:
+- ADMIN_SWAP_COMPLETED_NOTIFIED
+- ADMIN_PROOF_REJECTED_NOTIFIED
+- ADMIN_MATCH_CANCELLED_NOTIFIED
+- ADMIN_MATCH_RESULT_NOTIFY_FAILED
+
+━━━━━━━━━━━━━━━━━━
+BUILD
+━━━━━━━━━━━━━━━━━━
+
+Build project.
+Verify TypeScript errors.
+Commit and push GitHub main.
