@@ -424,8 +424,9 @@ async function performStuckCleanup(bot: Telegraf): Promise<{ clearedMatches: num
         // Admin notification — stuck cleanup cancelled this match
         await notifyAdminMatchCancelled(
           bot, activeMatch.user1Id, activeMatch.user2Id,
-          `Stuck session cleanup — match was inactive for more than 30 minutes. Triggered by system auto-cleanup.`,
+          `Stuck session cleanup detected inactive match. Responsible user last seen in state: ${state}.`,
           timerId,
+          telegramId,
         );
       }
     }
@@ -780,8 +781,9 @@ async function handleProofTimeout(
   // Admin notification — proof approval timeout
   await notifyAdminMatchCancelled(
     bot, match.user1Id, match.user2Id,
-    `Proof approval timeout — partner (ID: ${inactivePartnerId}) did not respond to proof from user (ID: ${proofOwnerId}) in time.`,
+    `Did not approve/reject partner proof — partner (ID: ${inactivePartnerId}) did not respond within the 10-minute window.`,
     matchId,
+    inactivePartnerId,
   );
 
   // Clean reset for honest proof owner — NO auto-requeue; manual new link required
@@ -824,11 +826,43 @@ async function handleMatchExpiry(
 
   await Match.updateOne({ _id: matchId }, { status: "expired" });
 
-  // Admin notification — match timer expired
+  // Admin notification — match timer expired; determine responsible user from DB states
+  const [u1state, u2state] = await Promise.all([
+    User.findOne({ telegramId: user1Id }).select("state"),
+    User.findOne({ telegramId: user2Id }).select("state"),
+  ]);
+  let expiryResponsible: number | null = null;
+  let expiryReason = "Match timer expired — 10-minute match window elapsed with no action.";
+  if (u1state?.state === "in_match" && u2state?.state !== "in_match") {
+    expiryResponsible = user1Id;
+    expiryReason = "Did not press Done Cut — 10-minute match window elapsed while user had not acted.";
+  } else if (u2state?.state === "in_match" && u1state?.state !== "in_match") {
+    expiryResponsible = user2Id;
+    expiryReason = "Did not press Done Cut — 10-minute match window elapsed while user had not acted.";
+  } else if (u1state?.state === "awaiting_proof_account_selection") {
+    expiryResponsible = user1Id;
+    expiryReason = "Did not choose TikTok account — 10-minute match window elapsed.";
+  } else if (u2state?.state === "awaiting_proof_account_selection") {
+    expiryResponsible = user2Id;
+    expiryReason = "Did not choose TikTok account — 10-minute match window elapsed.";
+  } else if (u1state?.state === "awaiting_proof_cut_username") {
+    expiryResponsible = user1Id;
+    expiryReason = "Did not enter TikTok username — 10-minute match window elapsed.";
+  } else if (u2state?.state === "awaiting_proof_cut_username") {
+    expiryResponsible = user2Id;
+    expiryReason = "Did not enter TikTok username — 10-minute match window elapsed.";
+  } else if (u1state?.state === "awaiting_proof") {
+    expiryResponsible = user1Id;
+    expiryReason = "Did not upload screenshot proof — 10-minute match window elapsed.";
+  } else if (u2state?.state === "awaiting_proof") {
+    expiryResponsible = user2Id;
+    expiryReason = "Did not upload screenshot proof — 10-minute match window elapsed.";
+  }
   await notifyAdminMatchCancelled(
     bot, user1Id, user2Id,
-    "Match timer expired — 10-minute match window elapsed with no action.",
+    expiryReason,
     matchId,
+    expiryResponsible,
   );
 
   const activeStates = ["in_match", "awaiting_proof_account_selection", "awaiting_proof_cut_username", "awaiting_proof", "awaiting_partner_approval", "awaiting_reject_reason"];
@@ -873,12 +907,23 @@ async function notifyAdminMatchCancelled(
   user2Id: number,
   reason: string,
   matchId?: string,
+  responsibleId?: number | null,
 ): Promise<void> {
   try {
-    const [uA, uB] = await Promise.all([
-      User.findOne({ telegramId: user1Id }).select("telegramUsername tiktokUsername"),
-      User.findOne({ telegramId: user2Id }).select("telegramUsername tiktokUsername"),
-    ]);
+    const userIds = [user1Id, user2Id, ...(responsibleId != null ? [responsibleId] : [])];
+    const uniqueIds = [...new Set(userIds)];
+    const docs = await User.find({ telegramId: { $in: uniqueIds } }).select("telegramId telegramUsername tiktokUsername");
+    const byId = new Map(docs.map(d => [d.telegramId, d]));
+
+    const fmt = (id: number) => {
+      const u = byId.get(id);
+      return `• Telegram: @${u?.telegramUsername || "N/A"}\n• TikTok: @${u?.tiktokUsername || "N/A"}\n• ID: ${id}`;
+    };
+
+    const responsibleBlock = responsibleId != null
+      ? `Responsible User:\n${fmt(responsibleId)}`
+      : `Responsible User:\nUnknown / needs manual review`;
+
     const mytime = new Date().toLocaleString("en-MY", {
       timeZone: "Asia/Kuala_Lumpur",
       year: "numeric", month: "2-digit", day: "2-digit",
@@ -888,21 +933,16 @@ async function notifyAdminMatchCancelled(
     const adminMsg =
       `⚠️ MATCH CANCELLED / TIMEOUT\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
-      `User A:\n` +
-      `• Telegram: @${uA?.telegramUsername || "N/A"}\n` +
-      `• TikTok: @${uA?.tiktokUsername || "N/A"}\n` +
-      `• ID: ${user1Id}\n\n` +
-      `User B:\n` +
-      `• Telegram: @${uB?.telegramUsername || "N/A"}\n` +
-      `• TikTok: @${uB?.tiktokUsername || "N/A"}\n` +
-      `• ID: ${user2Id}\n\n` +
+      `User A:\n${fmt(user1Id)}\n\n` +
+      `User B:\n${fmt(user2Id)}\n\n` +
+      `${responsibleBlock}\n\n` +
       `Reason:\n${reason}\n\n` +
       `• Time: ${mytime} MYT\n` +
       `━━━━━━━━━━━━━━━━━━`;
     for (const adminId of getAdminIds()) {
       try {
         await bot.telegram.sendMessage(adminId, adminMsg);
-        console.log(`[ADMIN_MATCH_CANCELLED_NOTIFIED]${matchId ? ` matchId=${matchId}` : ""} user1=${user1Id} user2=${user2Id} reason="${reason}" notified adminId=${adminId}`);
+        console.log(`[ADMIN_MATCH_CANCELLED_NOTIFIED]${matchId ? ` matchId=${matchId}` : ""} user1=${user1Id} user2=${user2Id} responsible=${responsibleId ?? "unknown"} notified adminId=${adminId}`);
       } catch (err) {
         console.error(`[ADMIN_MATCH_RESULT_NOTIFY_FAILED]${matchId ? ` matchId=${matchId}` : ""} cancel-notify adminId=${adminId}: ${(err as Error).message}`);
       }
@@ -3028,8 +3068,9 @@ export function createBot(): Telegraf {
     // Admin notification — manual match cancellation
     await notifyAdminMatchCancelled(
       bot, match.user1Id, match.user2Id,
-      `Manual cancellation — user ID ${telegramId} (@${user.tiktokUsername}) cancelled the match. 24h cooldown applied.`,
+      `Manually cancelled match — user pressed Cancel Match. 24h cooldown applied.`,
       match._id.toString(),
+      telegramId,
     );
   });
 
