@@ -38,6 +38,7 @@ export interface IUser extends Document {
   usernameConflictReset: boolean;
   lastResetNotifiedAt: Date | null;
   proofCutByUsername: string | null;
+  adminJoinNotified: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -81,6 +82,7 @@ const userSchema = new mongoose.Schema<IUser>(
     usernameConflictReset: { type: Boolean, default: false },
     lastResetNotifiedAt: { type: Date, default: null },
     proofCutByUsername: { type: String, default: null },
+    adminJoinNotified: { type: Boolean, default: false },
   },
   { timestamps: true },
 );

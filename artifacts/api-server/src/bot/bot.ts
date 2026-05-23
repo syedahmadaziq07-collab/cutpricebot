@@ -135,6 +135,9 @@ const inactivityReminderTimers = new Map<string, ReturnType<typeof setTimeout>[]
 const adminBroadcastPending = new Set<number>(); // admins awaiting broadcast message input
 const pendingRejectReasons = new Map<number, { matchId: string; proofOwnerId: number }>(); // rejecters awaiting reason input
 
+// New-user join notification lock — prevents duplicate admin notifications for the same telegramId
+const newUserNotifyLocks = new Set<number>();
+
 // Submit dedup — in-memory lock to prevent concurrent/duplicate cut link submissions per user
 const cutLinkSubmitLocks = new Set<number>();
 // Anti-spam — tracks last cut link submission timestamp per user (in-memory; 60s window)
@@ -1586,45 +1589,72 @@ export function createBot(): Telegraf {
         tiktokUsername: "__pending__",
         referralCode: generateReferralCode(),
         state: "awaiting_tiktok_profile",
-        $setOnInsert: { pendingReferralCode: referralCode },
+        $setOnInsert: { pendingReferralCode: referralCode, adminJoinNotified: false },
       },
       { upsert: true, new: true },
     );
+
+    if (isNewUser) {
+      console.log(`[NEW_USER_CREATED] telegramId=${telegramId} (@${telegramUsername || "no_username"}) — brand-new user document created.`);
+    } else {
+      console.log(`[EXISTING_USER_DETECTED] telegramId=${telegramId} (@${telegramUsername || "no_username"}) — returning user with state=awaiting_tiktok_profile.`);
+    }
     console.log(`[NEW_USER_AWAITING_PROFILE] telegramId=${telegramId} (@${telegramUsername || "no_username"}) — state set to awaiting_tiktok_profile.`);
 
-    // Admin notification — only for brand-new users, never for returning __pending__ users
+    // Admin notification — strictly once per user, guarded by in-memory lock + atomic DB claim
     if (isNewUser) {
-      const joinedAt = new Date().toLocaleString("en-MY", {
-        timeZone: "Asia/Kuala_Lumpur",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-      });
-      const displayName = ctx.from.first_name ?? "Unknown";
-      const displayUsername = ctx.from.username ? `@${ctx.from.username}` : "No username";
-      const totalUsers = await User.countDocuments();
-
-      const adminMsg =
-        `👤 NEW USER JOINED!\n` +
-        `━━━━━━━━━━━━━━━━━━\n` +
-        `• User Number: #${totalUsers}\n` +
-        `• Name: ${displayName}\n` +
-        `• Username: ${displayUsername}\n` +
-        `• ID: ${telegramId}\n` +
-        `• Time: ${joinedAt} MYT\n` +
-        `━━━━━━━━━━━━━━━━━━\n` +
-        `🆕 A new user just joined CutPricebot ✨`;
-
-      for (const adminId of getAdminIds()) {
+      // Guard 1: in-memory lock (same-process concurrent duplicate /start)
+      if (newUserNotifyLocks.has(telegramId)) {
+        console.log(`[DUPLICATE_ADMIN_NOTIFICATION_BLOCKED] telegramId=${telegramId} — in-memory lock already held, skipping admin notify.`);
+      } else {
+        newUserNotifyLocks.add(telegramId);
         try {
-          await bot.telegram.sendMessage(adminId, adminMsg);
-          console.log(`[NEW_USER_ADMIN_NOTIFIED] telegramId=${telegramId} (@${ctx.from.username ?? "no_username"}) — notified adminId=${adminId}. Total users: ${totalUsers}.`);
-        } catch (err) {
-          console.error(`[NEW_USER_ADMIN_NOTIFY_FAILED] telegramId=${telegramId} — failed to notify adminId=${adminId}: ${(err as Error).message}`);
+          // Guard 2: atomic DB claim — only succeeds if adminJoinNotified is still false
+          const claimed = await User.updateOne(
+            { telegramId, adminJoinNotified: false },
+            { $set: { adminJoinNotified: true } },
+          );
+
+          if (claimed.modifiedCount === 0) {
+            // Already notified (race condition caught at DB level)
+            console.log(`[DUPLICATE_ADMIN_NOTIFICATION_BLOCKED] telegramId=${telegramId} — adminJoinNotified already true in DB, skipping.`);
+          } else {
+            const joinedAt = new Date().toLocaleString("en-MY", {
+              timeZone: "Asia/Kuala_Lumpur",
+              year: "numeric",
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hour12: false,
+            });
+            const displayName = ctx.from.first_name ?? "Unknown";
+            const displayUsername = ctx.from.username ? `@${ctx.from.username}` : "No username";
+            const totalUsers = await User.countDocuments();
+
+            const adminMsg =
+              `👤 NEW USER JOINED!\n` +
+              `━━━━━━━━━━━━━━━━━━\n` +
+              `• User Number: #${totalUsers}\n` +
+              `• Name: ${displayName}\n` +
+              `• Username: ${displayUsername}\n` +
+              `• ID: ${telegramId}\n` +
+              `• Time: ${joinedAt} MYT\n` +
+              `━━━━━━━━━━━━━━━━━━\n` +
+              `🆕 A new user just joined CutPricebot ✨`;
+
+            for (const adminId of getAdminIds()) {
+              try {
+                await bot.telegram.sendMessage(adminId, adminMsg);
+                console.log(`[NEW_USER_ADMIN_NOTIFIED] telegramId=${telegramId} (@${ctx.from.username ?? "no_username"}) — notified adminId=${adminId}. Total users: ${totalUsers}.`);
+              } catch (err) {
+                console.error(`[NEW_USER_ADMIN_NOTIFY_FAILED] telegramId=${telegramId} — failed to notify adminId=${adminId}: ${(err as Error).message}`);
+              }
+            }
+          }
+        } finally {
+          newUserNotifyLocks.delete(telegramId);
         }
       }
     }

@@ -42971,7 +42971,8 @@ var userSchema = new mongoose2.Schema(
     tiktokLockedAt: { type: Date, default: null },
     usernameConflictReset: { type: Boolean, default: false },
     lastResetNotifiedAt: { type: Date, default: null },
-    proofCutByUsername: { type: String, default: null }
+    proofCutByUsername: { type: String, default: null },
+    adminJoinNotified: { type: Boolean, default: false }
   },
   { timestamps: true }
 );
@@ -43142,6 +43143,7 @@ var proofReminderTimers = /* @__PURE__ */ new Map();
 var inactivityReminderTimers = /* @__PURE__ */ new Map();
 var adminBroadcastPending = /* @__PURE__ */ new Set();
 var pendingRejectReasons = /* @__PURE__ */ new Map();
+var newUserNotifyLocks = /* @__PURE__ */ new Set();
 var cutLinkSubmitLocks = /* @__PURE__ */ new Set();
 var lastCutLinkSubmittedAt = /* @__PURE__ */ new Map();
 var CUT_LINK_SPAM_COOLDOWN_MS = 6e4;
@@ -44425,26 +44427,43 @@ Drop your TikTok cut price link below to start swapping \u{1F517}\u2728`,
         tiktokUsername: "__pending__",
         referralCode: generateReferralCode(),
         state: "awaiting_tiktok_profile",
-        $setOnInsert: { pendingReferralCode: referralCode }
+        $setOnInsert: { pendingReferralCode: referralCode, adminJoinNotified: false }
       },
       { upsert: true, new: true }
     );
+    if (isNewUser) {
+      console.log(`[NEW_USER_CREATED] telegramId=${telegramId} (@${telegramUsername || "no_username"}) \u2014 brand-new user document created.`);
+    } else {
+      console.log(`[EXISTING_USER_DETECTED] telegramId=${telegramId} (@${telegramUsername || "no_username"}) \u2014 returning user with state=awaiting_tiktok_profile.`);
+    }
     console.log(`[NEW_USER_AWAITING_PROFILE] telegramId=${telegramId} (@${telegramUsername || "no_username"}) \u2014 state set to awaiting_tiktok_profile.`);
     if (isNewUser) {
-      const joinedAt = (/* @__PURE__ */ new Date()).toLocaleString("en-MY", {
-        timeZone: "Asia/Kuala_Lumpur",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false
-      });
-      const displayName = ctx.from.first_name ?? "Unknown";
-      const displayUsername = ctx.from.username ? `@${ctx.from.username}` : "No username";
-      const totalUsers = await User.countDocuments();
-      const adminMsg = `\u{1F464} NEW USER JOINED!
+      if (newUserNotifyLocks.has(telegramId)) {
+        console.log(`[DUPLICATE_ADMIN_NOTIFICATION_BLOCKED] telegramId=${telegramId} \u2014 in-memory lock already held, skipping admin notify.`);
+      } else {
+        newUserNotifyLocks.add(telegramId);
+        try {
+          const claimed = await User.updateOne(
+            { telegramId, adminJoinNotified: false },
+            { $set: { adminJoinNotified: true } }
+          );
+          if (claimed.modifiedCount === 0) {
+            console.log(`[DUPLICATE_ADMIN_NOTIFICATION_BLOCKED] telegramId=${telegramId} \u2014 adminJoinNotified already true in DB, skipping.`);
+          } else {
+            const joinedAt = (/* @__PURE__ */ new Date()).toLocaleString("en-MY", {
+              timeZone: "Asia/Kuala_Lumpur",
+              year: "numeric",
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hour12: false
+            });
+            const displayName = ctx.from.first_name ?? "Unknown";
+            const displayUsername = ctx.from.username ? `@${ctx.from.username}` : "No username";
+            const totalUsers = await User.countDocuments();
+            const adminMsg = `\u{1F464} NEW USER JOINED!
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 \u2022 User Number: #${totalUsers}
 \u2022 Name: ${displayName}
@@ -44453,12 +44472,17 @@ Drop your TikTok cut price link below to start swapping \u{1F517}\u2728`,
 \u2022 Time: ${joinedAt} MYT
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 \u{1F195} A new user just joined CutPricebot \u2728`;
-      for (const adminId of getAdminIds()) {
-        try {
-          await bot.telegram.sendMessage(adminId, adminMsg);
-          console.log(`[NEW_USER_ADMIN_NOTIFIED] telegramId=${telegramId} (@${ctx.from.username ?? "no_username"}) \u2014 notified adminId=${adminId}. Total users: ${totalUsers}.`);
-        } catch (err) {
-          console.error(`[NEW_USER_ADMIN_NOTIFY_FAILED] telegramId=${telegramId} \u2014 failed to notify adminId=${adminId}: ${err.message}`);
+            for (const adminId of getAdminIds()) {
+              try {
+                await bot.telegram.sendMessage(adminId, adminMsg);
+                console.log(`[NEW_USER_ADMIN_NOTIFIED] telegramId=${telegramId} (@${ctx.from.username ?? "no_username"}) \u2014 notified adminId=${adminId}. Total users: ${totalUsers}.`);
+              } catch (err) {
+                console.error(`[NEW_USER_ADMIN_NOTIFY_FAILED] telegramId=${telegramId} \u2014 failed to notify adminId=${adminId}: ${err.message}`);
+              }
+            }
+          }
+        } finally {
+          newUserNotifyLocks.delete(telegramId);
         }
       }
     }
