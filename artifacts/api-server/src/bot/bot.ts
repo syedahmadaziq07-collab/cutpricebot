@@ -460,10 +460,12 @@ async function performStuckCleanup(bot: Telegraf): Promise<{ clearedMatches: num
         state: "awaiting_cut_link",
         isWaiting: false,
         queuedAt: null,
+        pendingLink: null,
         activeMatchId: null,
         proofCutByUsername: null,
       },
     );
+    console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${telegramId} path=stuck_cleanup`);
 
     // Notify user
     try {
@@ -811,8 +813,9 @@ async function handleProofTimeout(
   await Queue.deleteOne({ telegramId: proofOwnerId });
   await User.updateOne(
     { telegramId: proofOwnerId },
-    { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null },
+    { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null, proofCutByUsername: null },
   );
+  console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${proofOwnerId} path=proof_timeout_honest_owner`);
   console.log(`[AUTO_REMATCH_BLOCKED] matchId=${matchId} — honest user ${proofOwnerId} NOT auto-requeued. Manual link required.`);
   console.log(`[HONEST_USER_REMATCH_STOPPED] telegramId=${proofOwnerId} — reset to awaiting_cut_link, no queue insertion.`);
   console.log(`[USER_MANUAL_REMATCH_REQUIRED] telegramId=${proofOwnerId} — must submit new cut link to rejoin queue.`);
@@ -830,8 +833,9 @@ async function handleProofTimeout(
   await Queue.deleteOne({ telegramId: inactivePartnerId });
   await User.updateOne(
     { telegramId: inactivePartnerId },
-    { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null },
+    { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null, proofCutByUsername: null },
   );
+  console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${inactivePartnerId} path=proof_timeout_inactive_partner`);
   await issueNoResponseStrike(bot, inactivePartnerId);
 }
 
@@ -909,7 +913,8 @@ async function handleMatchExpiry(
     await Queue.deleteOne({ telegramId: uid });
     console.log(`[QUEUE_REMOVE] telegramId=${uid} removed from queue (match expired).`);
     // Clean reset — NO auto-requeue; user must manually submit a new cut link
-    await User.updateOne({ telegramId: uid }, { state: "awaiting_cut_link", pendingLink: null, isWaiting: false, queuedAt: null, activeMatchId: null });
+    await User.updateOne({ telegramId: uid }, { state: "awaiting_cut_link", pendingLink: null, isWaiting: false, queuedAt: null, activeMatchId: null, proofCutByUsername: null });
+    console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${uid} path=match_expiry`);
     console.log(`[AUTO_REMATCH_BLOCKED] matchId=${matchId} telegramId=${uid} — NOT auto-requeued after match expiry.`);
     console.log(`[USER_MANUAL_REMATCH_REQUIRED] telegramId=${uid} — must submit new cut link to rejoin queue.`);
     const remainingCuts = Math.max(0, user.cutBalance ?? 0);
@@ -1073,6 +1078,16 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
   console.log(`[FIFO_MATCH_SEARCH] telegramId=${currentTelegramId} — scanning queue ordered by queuedAt ASC (oldest-first FIFO).`);
   console.log(`[FIFO_QUEUE_ORDER_USED] sort=queuedAt:1 — oldest waiting user will be claimed first.`);
 
+  // Validate current user has no stale state before claiming a partner
+  const currentUserDoc = await User.findOne({ telegramId: currentTelegramId }).select("state isWaiting activeMatchId pendingLink");
+  if (currentUserDoc && currentUserDoc.activeMatchId && currentUserDoc.activeMatchId !== null) {
+    console.log(`[STALE_USER_STATE_DETECTED] telegramId=${currentTelegramId} has stale activeMatchId=${currentUserDoc.activeMatchId} — cleaning`);
+    await User.updateOne({ telegramId: currentTelegramId }, { activeMatchId: null, isWaiting: false, queuedAt: null, pendingLink: null, state: "awaiting_cut_link", proofCutByUsername: null });
+    await Queue.deleteOne({ telegramId: currentTelegramId });
+    console.log(`[STALE_USER_STATE_CLEANED] telegramId=${currentTelegramId}`);
+    return false;
+  }
+
   // Atomically claim the oldest eligible waiting user (strict FIFO via queuedAt: 1 sort)
   const partner = await User.findOneAndUpdate(
     {
@@ -1080,6 +1095,7 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
       state: "inqueue",
       isWaiting: true,
       activeMatchId: null,
+      pendingLink: { $nin: [null, ""] },
       isBanned: false,
       $or: [{ suspendedUntil: null }, { suspendedUntil: { $lte: now } }],
     },
@@ -1324,6 +1340,7 @@ async function checkAndCompleteMatch(bot: Telegraf, matchId: string): Promise<vo
           isWaiting: false,
           firstSwapCompleted: true,
           activeMatchId: null,
+          proofCutByUsername: null,
         },
       );
       if (saveResult.modifiedCount > 0) {
@@ -2475,6 +2492,75 @@ export function createBot(): Telegraf {
     }
   });
 
+  bot.command("fix_stale_users", async (ctx) => {
+    if (!getAdminIds().includes(ctx.from.id)) { await ctx.reply("🚫 Unauthorized."); return; }
+    console.log(`[FIX_STALE_USERS_COMMAND_RUN] by adminId=${ctx.from.id}`);
+
+    let usersFixed = 0;
+    let queueRemoved = 0;
+    let orphanMatchesCleared = 0;
+
+    try {
+      // 1. Users with activeMatchId pointing to a non-active match
+      const usersWithMatchId = await User.find({ activeMatchId: { $ne: null } }).select("telegramId activeMatchId state");
+      for (const u of usersWithMatchId) {
+        const match = await Match.findOne({ _id: u.activeMatchId, status: "active" });
+        if (!match) {
+          console.log(`[STALE_USER_STATE_DETECTED] telegramId=${u.telegramId} has stale activeMatchId=${u.activeMatchId} state=${u.state}`);
+          await User.updateOne(
+            { telegramId: u.telegramId },
+            { activeMatchId: null, isWaiting: false, queuedAt: null, pendingLink: null, state: "awaiting_cut_link", proofCutByUsername: null },
+          );
+          await Queue.deleteOne({ telegramId: u.telegramId });
+          console.log(`[STALE_USER_STATE_CLEANED] telegramId=${u.telegramId}`);
+          usersFixed++;
+        }
+      }
+
+      // 2. Queue entries with missing or null pendingLink
+      const orphanQueue = await Queue.find({ $or: [{ pendingLink: null }, { pendingLink: "" }] }).select("telegramId");
+      for (const q of orphanQueue) {
+        await Queue.deleteOne({ telegramId: q.telegramId });
+        await User.updateOne(
+          { telegramId: q.telegramId },
+          { isWaiting: false, queuedAt: null, pendingLink: null, state: "awaiting_cut_link", activeMatchId: null, proofCutByUsername: null },
+        );
+        console.log(`[ORPHAN_QUEUE_ENTRY_REMOVED] telegramId=${q.telegramId} — queue entry had no pendingLink`);
+        queueRemoved++;
+      }
+
+      // 3. Users stuck in match states but no valid active match exists for them
+      const matchStates = ["in_match", "awaiting_proof_account_selection", "awaiting_proof_cut_username", "awaiting_proof", "awaiting_partner_approval", "awaiting_reject_reason"];
+      const stuckUsers = await User.find({ state: { $in: matchStates }, activeMatchId: null }).select("telegramId state");
+      for (const u of stuckUsers) {
+        console.log(`[STALE_USER_STATE_DETECTED] telegramId=${u.telegramId} stuck in state=${u.state} with no activeMatchId`);
+        await User.updateOne(
+          { telegramId: u.telegramId },
+          { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null, proofCutByUsername: null },
+        );
+        await Queue.deleteOne({ telegramId: u.telegramId });
+        console.log(`[STALE_USER_STATE_CLEANED] telegramId=${u.telegramId}`);
+        usersFixed++;
+      }
+
+      // 4. Matches marked active but expired (expiresAt in the past)
+      const expiredActiveMatches = await Match.find({ status: "active", expiresAt: { $lt: new Date() } }).select("_id user1Id user2Id");
+      for (const m of expiredActiveMatches) {
+        await Match.updateOne({ _id: m._id }, { status: "expired" });
+        console.log(`[ORPHAN_MATCH_CLEARED] matchId=${m._id} — active match past expiresAt, marked expired`);
+        orphanMatchesCleared++;
+      }
+
+      await ctx.reply(
+        `✅ Stale user cleanup completed.\n\nUsers fixed: ${usersFixed}\nQueue entries removed: ${queueRemoved}\nOrphan matches cleared: ${orphanMatchesCleared}`,
+      );
+      console.log(`[FIX_STALE_USERS_COMMAND_DONE] usersFixed=${usersFixed} queueRemoved=${queueRemoved} orphanMatchesCleared=${orphanMatchesCleared}`);
+    } catch (err) {
+      console.error(`[FIX_STALE_USERS_COMMAND_FAILED] ${(err as Error).message}`);
+      await ctx.reply(`❌ Fix stale users failed: ${(err as Error).message}`);
+    }
+  });
+
   bot.on(message("photo"), async (ctx) => {
     const telegramId = ctx.from.id;
     console.log(`[MSG] photo from telegramId=${telegramId}`);
@@ -3134,8 +3220,9 @@ export function createBot(): Telegraf {
       if (partner.pendingLink) {
         await requeueUser(bot, partnerId, partner.pendingLink);
       } else {
-        await User.updateOne({ telegramId: partnerId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null });
+        await User.updateOne({ telegramId: partnerId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null, proofCutByUsername: null });
         console.log(`[PARTNER_NO_LINK] telegramId=${partnerId} has no pendingLink — set to awaiting_cut_link.`);
+        console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${partnerId} path=manual_cancel_partner`);
       }
     }
 
@@ -3292,9 +3379,10 @@ export function createBot(): Telegraf {
     const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);
     await User.updateOne(
       { telegramId: proofOwnerId },
-      { state: "idle", isWaiting: false, queuedAt: null, pendingLink: null, cancelCooldownUntil: cooldownUntil, activeMatchId: null },
+      { state: "idle", isWaiting: false, queuedAt: null, pendingLink: null, cancelCooldownUntil: cooldownUntil, activeMatchId: null, proofCutByUsername: null },
     );
     await Queue.deleteOne({ telegramId: proofOwnerId });
+    console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${proofOwnerId} path=proof_rejected_owner`);
 
     console.log(`[PROOF_REJECTED_WITH_REASON] telegramId=${telegramId} rejected proof of telegramId=${proofOwnerId} for matchId=${matchId} reason="${rejectReason}".`);
     console.log(`[USER_COOLDOWN_24H] telegramId=${proofOwnerId} placed on 24h cooldown until ${cooldownUntil.toISOString()} due to proof rejection.`);
@@ -3406,7 +3494,8 @@ export function createBot(): Telegraf {
     if (rejecterLink) {
       await requeueUser(bot, telegramId, rejecterLink);
     } else {
-      await User.updateOne({ telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null });
+      await User.updateOne({ telegramId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null, proofCutByUsername: null });
+      console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${telegramId} path=proof_rejected_rejecter_fallback`);
     }
   }
 

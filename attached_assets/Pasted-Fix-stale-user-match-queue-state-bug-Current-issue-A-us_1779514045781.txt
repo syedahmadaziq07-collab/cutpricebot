@@ -1,0 +1,105 @@
+Fix stale user/match/queue state bug.
+
+Current issue:
+A user who already finished or left a previous match can still appear in a new match/cancel notification later.
+
+Example:
+User A did not submit a new link, but their Telegram/TikTok username appears again in MATCH CANCELLED / TIMEOUT with another user.
+
+This means old state/pendingLink/activeMatchId/queue data was not fully cleared.
+
+━━━━━━━━━━━━━━━━━━
+REQUIRED FIX
+━━━━━━━━━━━━━━━━━━
+
+Audit and fix all match-ending paths:
+
+- swap completed
+- proof rejected
+- manual cancel
+- proof timeout
+- match expiry timeout
+- stuck cleanup
+- incomplete proof timeout
+- no-response timeout
+
+For BOTH users, every time a match ends, always clear:
+
+- activeMatchId = null
+- partnerId = null
+- state = registered / idle
+- isWaiting = false
+- queuedAt = null
+- pendingLink = null
+- proof state fields
+- proofCutByUsername
+- rejectReason temp state
+- any temporary match/proof timers
+
+━━━━━━━━━━━━━━━━━━
+QUEUE SAFETY
+━━━━━━━━━━━━━━━━━━
+
+Before creating any new match, validate both users:
+
+- activeMatchId must be null
+- state must be inqueue
+- isWaiting must be true
+- pendingLink must exist
+- user must not be banned/cooldown
+- user must not already be in another match
+
+If any stale data is found:
+- do NOT create match
+- clean the stale user state
+- log STALE_USER_STATE_CLEANED
+
+━━━━━━━━━━━━━━━━━━
+CLEANUP COMMAND
+━━━━━━━━━━━━━━━━━━
+
+Add admin command:
+
+/fix_stale_users
+
+This command should:
+- find users with activeMatchId but no valid active match
+- find queue users with missing/old pendingLink
+- find users stuck in in_match without valid match
+- clear stale state safely
+- remove orphaned queue entries
+
+Admin reply:
+
+✅ Stale user cleanup completed.
+
+Users fixed: {count}
+Queue entries removed: {count}
+Orphan matches cleared: {count}
+
+━━━━━━━━━━━━━━━━━━
+IMPORTANT
+━━━━━━━━━━━━━━━━━━
+
+- NEVER auto-rematch users after timeout/cancel
+- User must submit a fresh cut link to enter queue again
+- Do not reuse old pendingLink after any match ends
+- Do not change normal matchmaking logic
+- Do not change proof approval logic
+- Do not change cooldown/ban rules
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add logs:
+- MATCH_STATE_FULLY_CLEARED
+- STALE_USER_STATE_DETECTED
+- STALE_USER_STATE_CLEANED
+- ORPHAN_QUEUE_ENTRY_REMOVED
+- ORPHAN_MATCH_CLEARED
+- FIX_STALE_USERS_COMMAND_RUN
+
+Build project.
+Verify TypeScript errors.
+Commit and push GitHub main.
