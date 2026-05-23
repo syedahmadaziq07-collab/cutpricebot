@@ -1,0 +1,104 @@
+Improve admin match cancelled/timeout notification details.
+
+Goal:
+When a match is cancelled or timed out, admin must clearly see:
+- who submitted proof
+- who did not act
+- who caused the cancellation
+- what action was taken
+
+Do NOT change matchmaking logic.
+Do NOT change proof logic.
+Do NOT change cooldown/ban logic.
+Only improve admin notification text and detection details.
+
+━━━━━━━━━━━━━━━━━━
+NEW ADMIN MESSAGE FORMAT
+━━━━━━━━━━━━━━━━━━
+
+⚠️ MATCH CANCELLED / TIMEOUT
+━━━━━━━━━━━━━━━━━━
+
+User A:
+• Telegram: @{userA_telegram}
+• TikTok: @{userA_tiktok}
+• ID: {userA_id}
+• Status: {userA_status}
+
+User B:
+• Telegram: @{userB_telegram}
+• TikTok: @{userB_tiktok}
+• ID: {userB_id}
+• Status: {userB_status}
+
+Responsible User:
+{responsible_user}
+
+Reason:
+{clear_reason}
+
+System Action:
+• Match cancelled
+• {cooldown_or_no_cooldown}
+• {strike_or_no_strike}
+
+• Time: {Malaysia_Time}
+━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━
+STATUS EXAMPLES
+━━━━━━━━━━━━━━━━━━
+
+Use clear status labels:
+
+✅ Proof Submitted
+✅ Proof Approved
+❌ No Action
+❌ Did Not Press Done Cut
+❌ Did Not Choose TikTok Account
+❌ Did Not Upload Screenshot
+❌ Did Not Approve/Reject Proof
+⚠️ Manually Cancelled Match
+
+━━━━━━━━━━━━━━━━━━
+RESPONSIBLE USER RULES
+━━━━━━━━━━━━━━━━━━
+
+1. If one user submitted proof and the other did not approve/reject:
+Responsible User = the user who did not approve/reject.
+
+2. If one user pressed Done Cut but did not upload proof:
+Responsible User = that user.
+
+3. If one user manually cancelled:
+Responsible User = the user who cancelled.
+
+4. If both users did nothing:
+Responsible User = BOTH USERS.
+
+5. If system cannot detect clearly:
+Responsible User = Unknown / needs manual review.
+
+━━━━━━━━━━━━━━━━━━
+REASON EXAMPLES
+━━━━━━━━━━━━━━━━━━
+
+- Partner did not approve/reject proof within allowed time.
+- User did not upload screenshot proof.
+- User did not choose TikTok account.
+- Both users inactive.
+- Manual cancel by user.
+- Stuck cleanup detected inactive match.
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add/update logs:
+- ADMIN_MATCH_CANCELLED_DETAIL_RENDERED
+- RESPONSIBLE_USER_DETECTED
+- RESPONSIBLE_USER_UNKNOWN
+
+Build project.
+Verify TypeScript errors.
+Commit and push GitHub main.
