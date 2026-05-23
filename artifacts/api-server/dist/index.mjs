@@ -43666,30 +43666,33 @@ async function handleProofTimeout(bot, matchId, proofOwnerId, inactivePartnerId)
     `Proof approval timeout \u2014 partner (ID: ${inactivePartnerId}) did not respond to proof from user (ID: ${proofOwnerId}) in time.`,
     matchId
   );
-  const proofOwnerUser = await User.findOne({ telegramId: proofOwnerId }).select("pendingLink tiktokUsername");
-  const proofOwnerLink = proofOwnerUser?.pendingLink ?? match.link1 === void 0 ? "" : match.user1Id === proofOwnerId ? match.link1 : match.link2;
-  console.log(`[NO_RESPONSE_TIMEOUT] telegramId=${proofOwnerId} \u2014 requeueing innocent proof owner.`);
+  const proofOwnerUser = await User.findOne({ telegramId: proofOwnerId }).select("cutBalance tiktokUsername");
   await Queue.deleteOne({ telegramId: proofOwnerId });
+  await User.updateOne(
+    { telegramId: proofOwnerId },
+    { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null }
+  );
+  console.log(`[AUTO_REMATCH_BLOCKED] matchId=${matchId} \u2014 honest user ${proofOwnerId} NOT auto-requeued. Manual link required.`);
+  console.log(`[HONEST_USER_REMATCH_STOPPED] telegramId=${proofOwnerId} \u2014 reset to awaiting_cut_link, no queue insertion.`);
+  console.log(`[USER_MANUAL_REMATCH_REQUIRED] telegramId=${proofOwnerId} \u2014 must submit new cut link to rejoin queue.`);
+  console.log(`[MATCH_FULLY_TERMINATED] matchId=${matchId} \u2014 proof timeout, both users reset, no auto-rematch.`);
+  const remainingCuts = Math.max(0, proofOwnerUser?.cutBalance ?? 0);
   try {
     await bot.telegram.sendMessage(
       proofOwnerId,
-      `\u23F0 Your cut buddy didn't respond in time \u{1F635}\u200D\u{1F4AB}
+      `\u274C Your previous partner did not respond in time.
 
-No worries \u2014 you can drop a new link now to get rematched \u{1F447}\u2728
+\u2705 Your proof was successfully submitted.
 
-\u26A0\uFE0F Your partner has received a strike.
+\u26A0\uFE0F Your partner has received a cooldown/restriction for inactivity.
 
-\u2022 1st no-response \u2192 24h ban \u{1F6AB}
-\u2022 2nd no-response \u2192 24h ban \u{1F6AB}
-\u2022 3rd no-response \u2192 permanent ban`
+You are NOT currently in queue.
+
+If you want a new partner, please send a new cut link to start again \u{1F440}\u2728
+
+\u{1F39F} Remaining cuts: ${remainingCuts}`
     );
   } catch {
-  }
-  if (proofOwnerLink) {
-    await requeueUser(bot, proofOwnerId, proofOwnerLink);
-  } else {
-    await User.updateOne({ telegramId: proofOwnerId }, { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null });
-    console.log(`[NO_RESPONSE_TIMEOUT] telegramId=${proofOwnerId} has no pendingLink \u2014 reset to awaiting_cut_link.`);
   }
   await Queue.deleteOne({ telegramId: inactivePartnerId });
   await User.updateOne(
@@ -43709,11 +43712,10 @@ async function handleMatchExpiry(bot, matchId, user1Id, user2Id) {
     "Match timer expired \u2014 10-minute match window elapsed with no action.",
     matchId
   );
-  const expireMsg = "\u23F0 Your cut buddy didn't respond in time \u{1F635}\u200D\u{1F4AB}\n\nNo worries \u2014 you can drop a new link now to get rematched \u{1F447}\u2728";
+  const activeStates = ["in_match", "awaiting_proof_account_selection", "awaiting_proof_cut_username", "awaiting_proof", "awaiting_partner_approval", "awaiting_reject_reason"];
   for (const uid of [user1Id, user2Id]) {
     const user = await User.findOne({ telegramId: uid });
     if (!user) continue;
-    const activeStates = ["in_match", "awaiting_proof_account_selection", "awaiting_proof_cut_username", "awaiting_proof", "awaiting_partner_approval", "awaiting_reject_reason"];
     if (!activeStates.includes(user.state)) continue;
     const proofTimerKey = `proof:${matchId}:${uid}`;
     const existingProofTimer = proofTimers.get(proofTimerKey);
@@ -43729,14 +43731,25 @@ async function handleMatchExpiry(bot, matchId, user1Id, user2Id) {
     }
     await Queue.deleteOne({ telegramId: uid });
     console.log(`[QUEUE_REMOVE] telegramId=${uid} removed from queue (match expired).`);
-    await bot.telegram.sendMessage(uid, expireMsg);
-    const expiredLink = user.pendingLink ?? (match.user1Id === uid ? match.link1 : match.link2);
-    if (expiredLink) {
-      await requeueUser(bot, uid, expiredLink);
-    } else {
-      await User.updateOne({ telegramId: uid }, { state: "awaiting_cut_link", pendingLink: null, isWaiting: false, queuedAt: null, activeMatchId: null });
+    await User.updateOne({ telegramId: uid }, { state: "awaiting_cut_link", pendingLink: null, isWaiting: false, queuedAt: null, activeMatchId: null });
+    console.log(`[AUTO_REMATCH_BLOCKED] matchId=${matchId} telegramId=${uid} \u2014 NOT auto-requeued after match expiry.`);
+    console.log(`[USER_MANUAL_REMATCH_REQUIRED] telegramId=${uid} \u2014 must submit new cut link to rejoin queue.`);
+    const remainingCuts = Math.max(0, user.cutBalance ?? 0);
+    try {
+      await bot.telegram.sendMessage(
+        uid,
+        `\u274C This match has expired due to inactivity.
+
+You are NOT currently in queue.
+
+If you want a new partner, please send a new cut link to start again \u{1F440}\u2728
+
+\u{1F39F} Remaining cuts: ${remainingCuts}`
+      );
+    } catch {
     }
   }
+  console.log(`[MATCH_FULLY_TERMINATED] matchId=${matchId} \u2014 match expired, both users reset, no auto-rematch.`);
   matchTimers.delete(matchId);
   stopInactivityReminders(matchId, user1Id);
   stopInactivityReminders(matchId, user2Id);
