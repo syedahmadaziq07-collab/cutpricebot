@@ -5,7 +5,7 @@ export interface IMatch extends Document {
   user2Id: number;
   link1: string;
   link2: string;
-  status: "active" | "completed" | "expired" | "cancelled";
+  status: "pending_ready" | "active" | "completed" | "expired" | "cancelled";
   user1Confirmed: boolean;
   user2Confirmed: boolean;
   expiresAt: Date;
@@ -24,6 +24,14 @@ export interface IMatch extends Document {
 
   user1ProofCutByUsername: string | null;
   user2ProofCutByUsername: string | null;
+
+  user1ReadyToCut: boolean;
+  user2ReadyToCut: boolean;
+  user1ReadyAt: Date | null;
+  user2ReadyAt: Date | null;
+  linkRevealed: boolean;
+  linkRevealedAt: Date | null;
+  readyTimeoutAt: Date | null;
 }
 
 const matchSchema = new mongoose.Schema<IMatch>(
@@ -34,8 +42,8 @@ const matchSchema = new mongoose.Schema<IMatch>(
     link2: { type: String, default: "" },
     status: {
       type: String,
-      enum: ["active", "completed", "expired", "cancelled"],
-      default: "active",
+      enum: ["pending_ready", "active", "completed", "expired", "cancelled"],
+      default: "pending_ready",
     },
     user1Confirmed: { type: Boolean, default: false },
     user2Confirmed: { type: Boolean, default: false },
@@ -53,6 +61,14 @@ const matchSchema = new mongoose.Schema<IMatch>(
 
     user1ProofCutByUsername: { type: String, default: null },
     user2ProofCutByUsername: { type: String, default: null },
+
+    user1ReadyToCut: { type: Boolean, default: false },
+    user2ReadyToCut: { type: Boolean, default: false },
+    user1ReadyAt: { type: Date, default: null },
+    user2ReadyAt: { type: Date, default: null },
+    linkRevealed: { type: Boolean, default: false },
+    linkRevealedAt: { type: Date, default: null },
+    readyTimeoutAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

@@ -1,0 +1,211 @@
+Refactor matchmaking flow to add Ready Confirmation before revealing cut links.
+
+Current issue:
+Too many users get matched but do not press Done Cut / do not send proof.
+We need a fair pre-confirmation step before showing partner links.
+
+━━━━━━━━━━━━━━━━━━
+NEW MATCH FLOW
+━━━━━━━━━━━━━━━━━━
+
+When 2 users are matched:
+
+DO NOT reveal partner cut links immediately.
+
+Instead, send both users a confirmation message:
+
+🎯 Cut buddy found!
+
+Before we show the cut link, please confirm you are ready.
+
+Buttons:
+✅ Ready To Cut
+❌ Cancel Match
+
+━━━━━━━━━━━━━━━━━━
+READY LOGIC
+━━━━━━━━━━━━━━━━━━
+
+1. If BOTH users press ✅ Ready To Cut:
+- mark both users as ready
+- reveal both partner cut links
+- start normal active match flow
+- start Done Cut / proof timer
+- continue existing proof flow:
+  • Done Cut
+  • choose TikTok account
+  • upload screenshot proof
+  • partner approve/reject
+
+2. If ONE user presses ❌ Cancel Match before both are ready:
+- cancel the match
+- do NOT punish anyone
+- do NOT apply cooldown
+- do NOT count as ghost/incomplete strike
+- clear match state for cancelling user
+- clear match state for ready user
+
+If the other user had already pressed Ready:
+- auto return that ready user back into matchmaking queue
+- try to find a new partner for them
+- BUT do NOT auto-ready them
+- they must press ✅ Ready To Cut again for the new match
+
+3. If neither user presses Ready within timeout:
+- cancel match
+- no punishment
+- both users leave match/queue
+- user must submit link again if they want to match again
+
+━━━━━━━━━━━━━━━━━━
+IMPORTANT AUTO-MATCH RULE
+━━━━━━━━━━━━━━━━━━
+
+Auto rematch is ONLY allowed when:
+- user already pressed ✅ Ready To Cut
+- but partner cancelled before link reveal
+
+Do NOT auto rematch after:
+- successful completed swap
+- proof approved
+- proof rejected
+- proof timeout
+- match timeout after link reveal
+- inactivity/ghost punishment
+- stuck cleanup
+
+After completed swap:
+- stop everything
+- clear active match
+- user must manually submit a new cut link to join queue again
+
+━━━━━━━━━━━━━━━━━━
+PUNISHMENT RULE
+━━━━━━━━━━━━━━━━━━
+
+No punishment before links are revealed.
+
+Punishment only applies AFTER both users pressed Ready and links were revealed.
+
+Punish users if:
+- did not press Done Cut after Ready
+- did not choose TikTok account
+- did not upload proof
+- did not approve/reject proof
+- ghosted after link reveal
+
+Keep existing punishment system:
+- 24h cooldown where applicable
+- 3 repeated serious offences = permanent ban
+- admin notifications continue
+
+━━━━━━━━━━━━━━━━━━
+STATE / DB CHANGES
+━━━━━━━━━━━━━━━━━━
+
+Add fields if needed:
+- readyToCut: boolean
+- readyAt: Date
+- linkRevealed: boolean
+- linkRevealedAt: Date
+- readyTimeoutAt: Date
+
+Match states:
+- pending_ready
+- in_match
+- awaiting_done_cut
+- awaiting_proof
+- awaiting_approval
+- completed
+- cancelled
+
+━━━━━━━━━━━━━━━━━━
+BUTTON CALLBACKS
+━━━━━━━━━━━━━━━━━━
+
+Add handlers:
+- ready_to_cut:{matchId}
+- cancel_ready_match:{matchId}
+
+Rules:
+- only matched users can press these buttons
+- ignore expired/stale match buttons
+- prevent duplicate ready clicks
+- prevent race condition if both click at same time
+- never reveal links until both ready
+
+━━━━━━━━━━━━━━━━━━
+ADMIN NOTIFICATIONS
+━━━━━━━━━━━━━━━━━━
+
+Update admin notifications:
+
+If cancelled before ready:
+Reason:
+Pre-cut cancellation — user cancelled before links were revealed.
+
+System Action:
+• Match cancelled
+• No punishment applied
+• Links were not revealed
+
+If both ready and user ghosts after link reveal:
+Use existing punishment/admin notification flow.
+
+━━━━━━━━━━━━━━━━━━
+USER MESSAGES
+━━━━━━━━━━━━━━━━━━
+
+If user cancels before ready:
+❌ Match cancelled.
+
+No worries — no cooldown applied because the cut link was not revealed yet.
+
+If other user was ready and partner cancelled:
+⚠️ Your cut buddy cancelled before starting.
+
+You were ready, so we’re finding another partner for you now 👀✨
+
+If both ready:
+✅ Both users are ready!
+
+Here is your partner’s cut link:
+{partnerCutLink}
+
+Please complete the cut and press ✅ Done Cut when finished.
+
+━━━━━━━━━━━━━━━━━━
+SAFETY
+━━━━━━━━━━━━━━━━━━
+
+- Do not reveal TikTok cut links until both users press Ready
+- Do not apply punishment before link reveal
+- Do not auto-rematch after completed swaps
+- Do not auto-rematch after proof/reject/timeout punishment
+- Do not duplicate queue entries
+- Keep same-pair 24h rule
+- Keep duplicate submit lock
+- Keep cooldown/ban checks
+- Keep proof reject reason system
+- Keep existing admin logs
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add logs:
+- MATCH_PENDING_READY_CREATED
+- USER_READY_TO_CUT
+- BOTH_USERS_READY_LINKS_REVEALED
+- PRE_CUT_MATCH_CANCELLED_NO_PUNISHMENT
+- READY_USER_AUTO_REQUEUED_AFTER_PARTNER_CANCEL
+- AUTO_REMATCH_BLOCKED_AFTER_COMPLETION
+- READY_TIMEOUT_CANCELLED
+
+━━━━━━━━━━━━━━━━━━
+BUILD
+━━━━━━━━━━━━━━━━━━
+
+Build project.
+Verify TypeScript errors.
+Commit and push GitHub main.

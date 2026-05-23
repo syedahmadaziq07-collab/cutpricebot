@@ -42993,8 +42993,8 @@ var matchSchema = new mongoose3.Schema(
     link2: { type: String, default: "" },
     status: {
       type: String,
-      enum: ["active", "completed", "expired", "cancelled"],
-      default: "active"
+      enum: ["pending_ready", "active", "completed", "expired", "cancelled"],
+      default: "pending_ready"
     },
     user1Confirmed: { type: Boolean, default: false },
     user2Confirmed: { type: Boolean, default: false },
@@ -43008,7 +43008,14 @@ var matchSchema = new mongoose3.Schema(
     user2ProofMessageId: { type: String, default: null },
     user2ProofSubmittedAt: { type: Date, default: null },
     user1ProofCutByUsername: { type: String, default: null },
-    user2ProofCutByUsername: { type: String, default: null }
+    user2ProofCutByUsername: { type: String, default: null },
+    user1ReadyToCut: { type: Boolean, default: false },
+    user2ReadyToCut: { type: Boolean, default: false },
+    user1ReadyAt: { type: Date, default: null },
+    user2ReadyAt: { type: Date, default: null },
+    linkRevealed: { type: Boolean, default: false },
+    linkRevealedAt: { type: Date, default: null },
+    readyTimeoutAt: { type: Date, default: null }
   },
   { timestamps: true }
 );
@@ -43140,6 +43147,7 @@ var COOLDOWN_MS = 24 * 60 * 60 * 1e3;
 var matchTimers = /* @__PURE__ */ new Map();
 var proofTimers = /* @__PURE__ */ new Map();
 var proofReminderTimers = /* @__PURE__ */ new Map();
+var readyTimers = /* @__PURE__ */ new Map();
 var inactivityReminderTimers = /* @__PURE__ */ new Map();
 var adminBroadcastPending = /* @__PURE__ */ new Set();
 var pendingRejectReasons = /* @__PURE__ */ new Map();
@@ -43152,7 +43160,9 @@ var NO_RESPONSE_TIMEOUT_MS = 10 * 60 * 1e3;
 var NO_RESPONSE_REMINDER_MS = 8 * 60 * 1e3;
 var NO_RESPONSE_COOLDOWN_30M_MS = 30 * 60 * 1e3;
 var NO_RESPONSE_24H_MS = 24 * 60 * 60 * 1e3;
+var READY_TIMEOUT_MS = 5 * 60 * 1e3;
 var INACTIVITY_ACTIVE_STATES = [
+  "pending_ready",
   "in_match",
   "awaiting_proof_account_selection",
   "awaiting_proof_cut_username",
@@ -43161,6 +43171,8 @@ var INACTIVITY_ACTIVE_STATES = [
 ];
 function getStateHint(state) {
   switch (state) {
+    case "pending_ready":
+      return "\u{1F449} Please press \u2705 Ready To Cut or \u274C Cancel Match.";
     case "in_match":
       return "\u{1F449} Please press \u2705 Done Cut once you've completed the cut.";
     case "awaiting_proof_account_selection":
@@ -43339,6 +43351,7 @@ function scheduleDailyMidnightReset(bot) {
 }
 var STUCK_STATES = [
   "inqueue",
+  "pending_ready",
   "in_match",
   "awaiting_proof_account_selection",
   "awaiting_proof_cut_username",
@@ -43366,7 +43379,7 @@ async function performStuckCleanup(bot) {
   for (const user of stuckUsers) {
     const { telegramId, state, activeMatchId } = user;
     if (activeMatchId) {
-      const activeMatch = await Match.findOne({ _id: activeMatchId, status: "active" });
+      const activeMatch = await Match.findOne({ _id: activeMatchId, status: { $in: ["active", "pending_ready"] } });
       if (activeMatch) {
         await Match.updateOne({ _id: activeMatch._id }, { status: "cancelled" });
         const timerId = activeMatch._id.toString();
@@ -43374,6 +43387,11 @@ async function performStuckCleanup(bot) {
         if (existingTimer) {
           clearTimeout(existingTimer);
           matchTimers.delete(timerId);
+        }
+        const existingReadyTimer = readyTimers.get(timerId);
+        if (existingReadyTimer) {
+          clearTimeout(existingReadyTimer);
+          readyTimers.delete(timerId);
         }
         for (const uid of [activeMatch.user1Id, activeMatch.user2Id]) {
           const ptKey = `proof:${timerId}:${uid}`;
@@ -43391,16 +43409,17 @@ async function performStuckCleanup(bot) {
           stopInactivityReminders(timerId, uid);
         }
         clearedMatches++;
-        console.log(`[STUCK_MATCH_CLEARED] matchId=${timerId} telegramId=${telegramId} state=${state}`);
+        console.log(`[STUCK_MATCH_CLEARED] matchId=${timerId} telegramId=${telegramId} state=${state} matchStatus=${activeMatch.status}`);
         const stuckOtherId = activeMatch.user1Id === telegramId ? activeMatch.user2Id : activeMatch.user1Id;
         const stuckOtherDoc = await User.findOne({ telegramId: stuckOtherId }).select("state");
         const stuckU1Status = activeMatch.user1Id === telegramId ? matchStateToStatus(state) : matchStateToStatus(stuckOtherDoc?.state);
         const stuckU2Status = activeMatch.user2Id === telegramId ? matchStateToStatus(state) : matchStateToStatus(stuckOtherDoc?.state);
+        const isPreLinkReveal = activeMatch.status === "pending_ready";
         await notifyAdminMatchCancelled(
           bot,
           activeMatch.user1Id,
           activeMatch.user2Id,
-          `Stuck cleanup detected inactive match. Responsible user last seen in state: ${state}.`,
+          `Stuck cleanup detected inactive match${isPreLinkReveal ? " (pending_ready \u2014 links not revealed)" : ""}. Responsible user last seen in state: ${state}.`,
           timerId,
           {
             responsibleId: telegramId,
@@ -43832,6 +43851,8 @@ If you want a new partner, please send a new cut link to start again \u{1F440}\u
 }
 function matchStateToStatus(state) {
   switch (state) {
+    case "pending_ready":
+      return "\u23F3 Waiting for Ready Confirmation";
     case "in_match":
       return "\u274C Did Not Press Done Cut";
     case "awaiting_proof_account_selection":
@@ -43926,10 +43947,10 @@ ${systemActionsText}
 async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
   const existingMatch = await Match.findOne({
     $or: [{ user1Id: currentTelegramId }, { user2Id: currentTelegramId }],
-    status: "active"
+    status: { $in: ["active", "pending_ready"] }
   });
   if (existingMatch) {
-    console.log(`[DOUBLE_MATCH_BLOCKED] telegramId=${currentTelegramId} already has activeMatchId=${existingMatch._id} \u2014 skipping new match.`);
+    console.log(`[DOUBLE_MATCH_BLOCKED] telegramId=${currentTelegramId} already has activeMatchId=${existingMatch._id} (status=${existingMatch.status}) \u2014 skipping new match.`);
     return false;
   }
   const now = /* @__PURE__ */ new Date();
@@ -43966,7 +43987,7 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
     },
     {
       $set: {
-        state: "in_match",
+        state: "pending_ready",
         isWaiting: false,
         queuedAt: null,
         activeMatchId: matchId,
@@ -43986,7 +44007,7 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
     { telegramId: currentTelegramId },
     {
       $set: {
-        state: "in_match",
+        state: "pending_ready",
         isWaiting: false,
         queuedAt: null,
         activeMatchId: matchId,
@@ -43997,7 +44018,8 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
   );
   await Queue.deleteMany({ telegramId: { $in: [currentTelegramId, partner.telegramId] } });
   const partnerPendingLink = partner.pendingLink ?? "";
-  const expiresAt = new Date(now.getTime() + 10 * 60 * 1e3);
+  const expiresAt = new Date(now.getTime() + 20 * 60 * 1e3);
+  const readyTimeoutAt = new Date(now.getTime() + READY_TIMEOUT_MS);
   const pairKey = [currentTelegramId, partner.telegramId].sort((a, b) => a - b).join(":");
   const [matchDoc] = await Promise.all([
     Match.create({
@@ -44006,7 +44028,9 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
       user2Id: partner.telegramId,
       link1: pendingLink,
       link2: partnerPendingLink,
-      expiresAt
+      status: "pending_ready",
+      expiresAt,
+      readyTimeoutAt
     }),
     MatchHistory.create({
       userIdA: currentTelegramId,
@@ -44016,50 +44040,81 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
     })
   ]);
   const currentUser = await User.findOne({ telegramId: currentTelegramId }).select("tiktokUsername");
-  console.log(`[MATCH_CREATED] matchId=${matchId} | userA=${currentTelegramId} (@${currentUser?.tiktokUsername}) link="${pendingLink}" | userB=${partner.telegramId} (@${partner.tiktokUsername}) link="${partnerPendingLink}"`);
+  console.log(`[MATCH_PENDING_READY_CREATED] matchId=${matchId} | userA=${currentTelegramId} (@${currentUser?.tiktokUsername}) | userB=${partner.telegramId} (@${partner.tiktokUsername}) \u2014 awaiting ready confirmations.`);
   console.log(`[MATCH_HISTORY_CREATED] pairKey=${pairKey} matchedAt=${now.toISOString()}`);
-  const matchButtons = import_telegraf.Markup.inlineKeyboard([
-    import_telegraf.Markup.button.callback("\u2705 Done Cut", "done_cut"),
-    import_telegraf.Markup.button.callback("\u274C Cancel Match (24h cooldown)", "cancel_match")
+  const readyButtons = import_telegraf.Markup.inlineKeyboard([
+    [import_telegraf.Markup.button.callback("\u2705 Ready To Cut", `ready_to_cut:${matchId}`)],
+    [import_telegraf.Markup.button.callback("\u274C Cancel Match", `cancel_ready_match:${matchId}`)]
   ]);
   await Promise.all([
     bot.telegram.sendMessage(
       currentTelegramId,
-      `\u{1F389} Cut buddy found!
+      `\u{1F3AF} Cut buddy found!
 
-Your partner:
-@${partner.tiktokUsername} \u{1F440}
+Before we show the cut link, please confirm you are ready.
 
-Their cut link:
-${partnerPendingLink}
+Press \u2705 Ready To Cut to continue, or \u274C Cancel Match to back out.
 
-Go show some love and finish the cut first \u{1F91D}\u2728`,
-      { ...matchButtons }
+_(No cooldown if you cancel now \u2014 links haven't been shared yet)_`,
+      { parse_mode: "Markdown", ...readyButtons }
     ),
     bot.telegram.sendMessage(
       partner.telegramId,
-      `\u{1F389} Cut buddy found!
+      `\u{1F3AF} Cut buddy found!
 
-Your partner:
-@${currentUser?.tiktokUsername} \u{1F440}
+Before we show the cut link, please confirm you are ready.
 
-Their cut link:
-${pendingLink}
+Press \u2705 Ready To Cut to continue, or \u274C Cancel Match to back out.
 
-Go show some love and finish the cut first \u{1F91D}\u2728`,
-      { ...matchButtons }
+_(No cooldown if you cancel now \u2014 links haven't been shared yet)_`,
+      { parse_mode: "Markdown", ...readyButtons }
     )
   ]);
-  console.log(`[MATCH_EXPIRY_TIMER_10M_STARTED] matchId=${matchId} \u2014 10-minute expiry timer started.`);
-  const timer = setTimeout(async () => {
-    console.log(`[MATCH_EXPIRY_TIMER_10M_TRIGGERED] matchId=${matchId} \u2014 10-minute window elapsed, triggering expiry.`);
-    await handleMatchExpiry(bot, matchId, currentTelegramId, partner.telegramId);
-  }, 10 * 60 * 1e3);
-  matchTimers.set(matchId, timer);
-  void startInactivityReminders(bot, matchId, currentTelegramId, "in_match");
-  void startInactivityReminders(bot, matchId, partner.telegramId, "in_match");
+  console.log(`[READY_TIMEOUT_STARTED] matchId=${matchId} \u2014 5-minute ready timeout started.`);
+  const readyTimer = setTimeout(async () => {
+    console.log(`[READY_TIMEOUT_TRIGGERED] matchId=${matchId} \u2014 5-minute ready window elapsed.`);
+    await handleReadyTimeout(bot, matchId, currentTelegramId, partner.telegramId);
+  }, READY_TIMEOUT_MS);
+  readyTimers.set(matchId, readyTimer);
+  void startInactivityReminders(bot, matchId, currentTelegramId, "pending_ready");
+  void startInactivityReminders(bot, matchId, partner.telegramId, "pending_ready");
   void matchDoc;
   return true;
+}
+async function handleReadyTimeout(bot, matchId, user1Id, user2Id) {
+  const match = await Match.findOne({ _id: matchId, status: "pending_ready" });
+  if (!match) {
+    console.log(`[READY_TIMEOUT_SKIPPED] matchId=${matchId} \u2014 match no longer pending_ready.`);
+    return;
+  }
+  await Match.updateOne({ _id: matchId }, { status: "cancelled" });
+  readyTimers.delete(matchId);
+  console.log(`[READY_TIMEOUT_CANCELLED] matchId=${matchId} \u2014 neither/one user confirmed ready in time. No punishment.`);
+  stopInactivityReminders(matchId, user1Id);
+  stopInactivityReminders(matchId, user2Id);
+  for (const uid of [user1Id, user2Id]) {
+    const user = await User.findOne({ telegramId: uid });
+    if (!user) continue;
+    if (!["pending_ready", "inqueue"].includes(user.state)) continue;
+    await Queue.deleteOne({ telegramId: uid });
+    await User.updateOne(
+      { telegramId: uid },
+      { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null }
+    );
+    console.log(`[READY_TIMEOUT_CANCELLED] telegramId=${uid} reset to awaiting_cut_link \u2014 no punishment.`);
+    try {
+      await bot.telegram.sendMessage(
+        uid,
+        `\u23F0 Ready confirmation timed out.
+
+No worries \u2014 no cooldown applied.
+
+Submit a new cut link whenever you're ready to match again \u{1F440}\u2728`
+      );
+    } catch {
+    }
+  }
+  console.log(`[MATCH_FULLY_TERMINATED] matchId=${matchId} \u2014 ready timeout, both users reset, no punishment.`);
 }
 async function addToQueue(_bot, telegramId, pendingLink) {
   const existing = await Queue.findOne({ telegramId });
@@ -44783,7 +44838,7 @@ Candidates found: ${candidates.length}`);
     await Queue.deleteOne({ telegramId });
     const activeMatch = await Match.findOne({
       $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
-      status: "active"
+      status: { $in: ["active", "pending_ready"] }
     });
     if (activeMatch) {
       await Match.updateOne({ _id: activeMatch._id }, { status: "cancelled" });
@@ -44792,6 +44847,11 @@ Candidates found: ${candidates.length}`);
       if (existingTimer) {
         clearTimeout(existingTimer);
         matchTimers.delete(timerId);
+      }
+      const existingReadyTimer = readyTimers.get(timerId);
+      if (existingReadyTimer) {
+        clearTimeout(existingReadyTimer);
+        readyTimers.delete(timerId);
       }
       const partnerId = activeMatch.user1Id === telegramId ? activeMatch.user2Id : activeMatch.user1Id;
       const partner = await User.findOne({ telegramId: partnerId });
@@ -44898,7 +44958,7 @@ Candidates found: ${candidates.length}`);
     }
     await User.updateOne({ telegramId: targetId }, { isBanned: true, state: "idle", isWaiting: false, queuedAt: null, pendingLink: null });
     await Queue.deleteOne({ telegramId: targetId });
-    const activeMatch = await Match.findOne({ $or: [{ user1Id: targetId }, { user2Id: targetId }], status: "active" });
+    const activeMatch = await Match.findOne({ $or: [{ user1Id: targetId }, { user2Id: targetId }], status: { $in: ["active", "pending_ready"] } });
     if (activeMatch) {
       await Match.updateOne({ _id: activeMatch._id }, { status: "cancelled" });
       const timerId = activeMatch._id.toString();
@@ -44906,6 +44966,11 @@ Candidates found: ${candidates.length}`);
       if (t) {
         clearTimeout(t);
         matchTimers.delete(timerId);
+      }
+      const rt = readyTimers.get(timerId);
+      if (rt) {
+        clearTimeout(rt);
+        readyTimers.delete(timerId);
       }
       const partnerId = activeMatch.user1Id === targetId ? activeMatch.user2Id : activeMatch.user1Id;
       const partner = await User.findOne({ telegramId: partnerId });
@@ -44981,7 +45046,7 @@ Candidates found: ${candidates.length}`);
     try {
       await User.updateOne({ telegramId: targetId }, { isBanned: true, state: "idle", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null });
       await Queue.deleteOne({ telegramId: targetId });
-      const activeMatch = await Match.findOne({ $or: [{ user1Id: targetId }, { user2Id: targetId }], status: "active" });
+      const activeMatch = await Match.findOne({ $or: [{ user1Id: targetId }, { user2Id: targetId }], status: { $in: ["active", "pending_ready"] } });
       if (activeMatch) {
         await Match.updateOne({ _id: activeMatch._id }, { status: "cancelled" });
         const timerId = activeMatch._id.toString();
@@ -44989,6 +45054,11 @@ Candidates found: ${candidates.length}`);
         if (t) {
           clearTimeout(t);
           matchTimers.delete(timerId);
+        }
+        const rt = readyTimers.get(timerId);
+        if (rt) {
+          clearTimeout(rt);
+          readyTimers.delete(timerId);
         }
         const partnerId = activeMatch.user1Id === targetId ? activeMatch.user2Id : activeMatch.user1Id;
         const partner = await User.findOne({ telegramId: partnerId });
@@ -45042,7 +45112,7 @@ User ID: ${targetId}`);
         { cancelCooldownUntil: cooldownUntil, state: "idle", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null }
       );
       await Queue.deleteOne({ telegramId: targetId });
-      const activeMatch = await Match.findOne({ $or: [{ user1Id: targetId }, { user2Id: targetId }], status: "active" });
+      const activeMatch = await Match.findOne({ $or: [{ user1Id: targetId }, { user2Id: targetId }], status: { $in: ["active", "pending_ready"] } });
       if (activeMatch) {
         await Match.updateOne({ _id: activeMatch._id }, { status: "cancelled" });
         const timerId = activeMatch._id.toString();
@@ -45050,6 +45120,11 @@ User ID: ${targetId}`);
         if (t) {
           clearTimeout(t);
           matchTimers.delete(timerId);
+        }
+        const rt = readyTimers.get(timerId);
+        if (rt) {
+          clearTimeout(rt);
+          readyTimers.delete(timerId);
         }
         const partnerId = activeMatch.user1Id === targetId ? activeMatch.user2Id : activeMatch.user1Id;
         const partner = await User.findOne({ telegramId: partnerId });
@@ -45260,6 +45335,7 @@ User ID: ${targetId}`);
       idle: "\u{1F634} Idle",
       awaiting_cut_link: "\u23F3 Tunggu link",
       inqueue: "\u{1F50D} Cari partner...",
+      pending_ready: "\u{1F3AF} Partner found \u2014 confirm ready",
       in_match: "\u{1F91D} In match",
       awaiting_proof_account_selection: "\u{1F50D} Pilih akaun bukti",
       awaiting_proof_cut_username: "\u270D\uFE0F Masukkan username",
@@ -45297,8 +45373,8 @@ Status: ${statusMap[user.state] ?? user.state}`,
       if (suspendedUntil && suspendedUntil > now) reasons.push("COOLDOWN");
       if (!pendingLink) reasons.push("STALE_QUEUE");
       if (activeMatchId) {
-        const activeMatch = await Match.findOne({ _id: activeMatchId, status: "active" });
-        if (activeMatch) reasons.push("ACTIVE_MATCH");
+        const activeMatch = await Match.findOne({ _id: activeMatchId, status: { $in: ["active", "pending_ready"] } });
+        if (activeMatch) reasons.push(activeMatch.status === "pending_ready" ? "PENDING_READY_MATCH" : "ACTIVE_MATCH");
       }
       const recentHistory = await MatchHistory.find({
         $or: [{ userIdA: telegramId }, { userIdB: telegramId }],
@@ -45401,7 +45477,7 @@ Cleared proof states: ${clearedProof}`
     try {
       const usersWithMatchId = await User.find({ activeMatchId: { $ne: null } }).select("telegramId activeMatchId state");
       for (const u of usersWithMatchId) {
-        const match = await Match.findOne({ _id: u.activeMatchId, status: "active" });
+        const match = await Match.findOne({ _id: u.activeMatchId, status: { $in: ["active", "pending_ready"] } });
         if (!match) {
           console.log(`[STALE_USER_STATE_DETECTED] telegramId=${u.telegramId} has stale activeMatchId=${u.activeMatchId} state=${u.state}`);
           await User.updateOne(
@@ -45423,7 +45499,7 @@ Cleared proof states: ${clearedProof}`
         console.log(`[ORPHAN_QUEUE_ENTRY_REMOVED] telegramId=${q.telegramId} \u2014 queue entry had no pendingLink`);
         queueRemoved++;
       }
-      const matchStates = ["in_match", "awaiting_proof_account_selection", "awaiting_proof_cut_username", "awaiting_proof", "awaiting_partner_approval", "awaiting_reject_reason"];
+      const matchStates = ["pending_ready", "in_match", "awaiting_proof_account_selection", "awaiting_proof_cut_username", "awaiting_proof", "awaiting_partner_approval", "awaiting_reject_reason"];
       const stuckUsers = await User.find({ state: { $in: matchStates }, activeMatchId: null }).select("telegramId state");
       for (const u of stuckUsers) {
         console.log(`[STALE_USER_STATE_DETECTED] telegramId=${u.telegramId} stuck in state=${u.state} with no activeMatchId`);
@@ -45471,6 +45547,10 @@ Orphan matches cleared: ${orphanMatchesCleared}`
     const user = await User.findOne({ telegramId });
     if (!user || user.tiktokUsername === "__pending__") {
       await ctx.reply("Kau belum register lagi. Taip /start dulu k!");
+      return;
+    }
+    if (user.state === "pending_ready") {
+      await ctx.reply("\u{1F449} Please press \u2705 Ready To Cut or \u274C Cancel Match using the buttons above first.");
       return;
     }
     if (user.state === "in_match") {
@@ -45795,10 +45875,10 @@ ${refLink}`,
         console.log(`[VALID_CUT_LINK_ACCEPTED] telegramId=${telegramId} (@${user.tiktokUsername}) submitted valid cut link: "${text}"`);
         const activeMatch = await Match.findOne({
           $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
-          status: "active"
+          status: { $in: ["active", "pending_ready"] }
         });
         if (activeMatch) {
-          console.log(`[ACTIVE_MATCH_BLOCKED_NEW_LINK] telegramId=${telegramId} (@${user.tiktokUsername}) tried to submit new link while match ${activeMatch._id} is still active.`);
+          console.log(`[ACTIVE_MATCH_BLOCKED_NEW_LINK] telegramId=${telegramId} (@${user.tiktokUsername}) tried to submit new link while match ${activeMatch._id} is still ${activeMatch.status}.`);
           await ctx.reply(
             "Please complete your current swap first \u{1F91D}\n\nYou can submit a new link after both proofs are approved.\n\nDon't worry \u2014 I'll send you a notification once your current swap is fully completed \u{1F514}\u2728"
           );
@@ -45928,6 +46008,10 @@ Example:
       console.log(`[PROOF_ACCOUNT_SELECTION_RESENT] telegramId=${telegramId} \u2014 resent via text block`);
       return;
     }
+    if (user.state === "pending_ready") {
+      await ctx.reply("\u{1F449} Please press \u2705 Ready To Cut or \u274C Cancel Match using the buttons above.");
+      return;
+    }
     if (user.state === "in_match") {
       await ctx.reply("Sila tekan butang *\u2705 Done Cut* apabila anda selesai cut link partner.", { parse_mode: "Markdown" });
       return;
@@ -46043,6 +46127,240 @@ Example:
       void startInactivityReminders(bot, mid, telegramId, "in_match");
     }
     await ctx.reply("\u274C Cancelled. You can press \u2705 Done Cut again when you're ready.");
+  });
+  bot.action(/^ready_to_cut:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const telegramId = ctx.from.id;
+    const matchId = ctx.match[1];
+    try {
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+    } catch {
+    }
+    const user = await User.findOne({ telegramId });
+    if (!user || user.state !== "pending_ready") {
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] ready_to_cut \u2014 telegramId=${telegramId} matchId=${matchId} \u2014 not in pending_ready state.`);
+      await ctx.reply("\u26A0\uFE0F Action already processed.");
+      return;
+    }
+    const match = await Match.findOne({ _id: matchId, status: "pending_ready" });
+    if (!match) {
+      console.log(`[STALE_READY_BUTTON_BLOCKED] ready_to_cut \u2014 telegramId=${telegramId} matchId=${matchId} \u2014 match no longer pending_ready.`);
+      await ctx.reply("\u26A0\uFE0F This match is no longer active.");
+      return;
+    }
+    if (match.user1Id !== telegramId && match.user2Id !== telegramId) {
+      console.log(`[INVALID_CALLBACK_BLOCKED] ready_to_cut \u2014 telegramId=${telegramId} not a participant in matchId=${matchId}.`);
+      await ctx.reply("\u26A0\uFE0F You are not part of this match.");
+      return;
+    }
+    const isUser1 = match.user1Id === telegramId;
+    const partnerId = isUser1 ? match.user2Id : match.user1Id;
+    const readyField = isUser1 ? "user1ReadyToCut" : "user2ReadyToCut";
+    const readyAtField = isUser1 ? "user1ReadyAt" : "user2ReadyAt";
+    const partnerReadyField = isUser1 ? "user2ReadyToCut" : "user1ReadyToCut";
+    if (match[readyField] === true) {
+      console.log(`[DUPLICATE_READY_BLOCKED] ready_to_cut \u2014 telegramId=${telegramId} matchId=${matchId} \u2014 already marked ready.`);
+      await ctx.reply("\u2705 You're already marked as ready! Waiting for your partner...");
+      return;
+    }
+    const updatedMatch = await Match.findOneAndUpdate(
+      { _id: matchId, status: "pending_ready", [readyField]: false },
+      { $set: { [readyField]: true, [readyAtField]: /* @__PURE__ */ new Date() } },
+      { new: true }
+    );
+    if (!updatedMatch) {
+      console.log(`[READY_RACE_CONDITION_HANDLED] ready_to_cut \u2014 telegramId=${telegramId} matchId=${matchId} \u2014 race condition or already set.`);
+      await ctx.reply("\u26A0\uFE0F Action already processed.");
+      return;
+    }
+    console.log(`[USER_READY_TO_CUT] telegramId=${telegramId} matchId=${matchId} isUser1=${isUser1}`);
+    const bothReady = updatedMatch[partnerReadyField] === true;
+    if (!bothReady) {
+      await ctx.reply("\u2705 You're ready! Waiting for your cut buddy to confirm...\n\n_(You'll get the link as soon as they're ready too \u{1F440}\u2728)_", { parse_mode: "Markdown" });
+      return;
+    }
+    const cancelReadyTimer = readyTimers.get(matchId);
+    if (cancelReadyTimer) {
+      clearTimeout(cancelReadyTimer);
+      readyTimers.delete(matchId);
+    }
+    stopInactivityReminders(matchId, match.user1Id);
+    stopInactivityReminders(matchId, match.user2Id);
+    const now = /* @__PURE__ */ new Date();
+    const expiresAt = new Date(now.getTime() + 10 * 60 * 1e3);
+    await Match.updateOne(
+      { _id: matchId },
+      { $set: { status: "active", linkRevealed: true, linkRevealedAt: now, expiresAt } }
+    );
+    await Promise.all([
+      User.updateOne({ telegramId: match.user1Id }, { state: "in_match" }),
+      User.updateOne({ telegramId: match.user2Id }, { state: "in_match" })
+    ]);
+    console.log(`[BOTH_USERS_READY_LINKS_REVEALED] matchId=${matchId} \u2014 both ready, match activated, links revealed.`);
+    const [u1, u2] = await Promise.all([
+      User.findOne({ telegramId: match.user1Id }).select("tiktokUsername"),
+      User.findOne({ telegramId: match.user2Id }).select("tiktokUsername")
+    ]);
+    const matchButtons = import_telegraf.Markup.inlineKeyboard([
+      import_telegraf.Markup.button.callback("\u2705 Done Cut", "done_cut"),
+      import_telegraf.Markup.button.callback("\u274C Cancel Match (24h cooldown)", "cancel_match")
+    ]);
+    await Promise.all([
+      bot.telegram.sendMessage(
+        match.user1Id,
+        `\u2705 Both users are ready!
+
+Here is your partner's cut link:
+${match.link2}
+
+Your partner:
+@${u2?.tiktokUsername} \u{1F440}
+
+Go show some love and finish the cut first \u{1F91D}\u2728`,
+        { ...matchButtons }
+      ),
+      bot.telegram.sendMessage(
+        match.user2Id,
+        `\u2705 Both users are ready!
+
+Here is your partner's cut link:
+${match.link1}
+
+Your partner:
+@${u1?.tiktokUsername} \u{1F440}
+
+Go show some love and finish the cut first \u{1F91D}\u2728`,
+        { ...matchButtons }
+      )
+    ]);
+    console.log(`[MATCH_EXPIRY_TIMER_10M_STARTED] matchId=${matchId} \u2014 10-minute expiry timer started after link reveal.`);
+    const expiryTimer = setTimeout(async () => {
+      console.log(`[MATCH_EXPIRY_TIMER_10M_TRIGGERED] matchId=${matchId} \u2014 10-minute window elapsed, triggering expiry.`);
+      await handleMatchExpiry(bot, matchId, match.user1Id, match.user2Id);
+    }, 10 * 60 * 1e3);
+    matchTimers.set(matchId, expiryTimer);
+    void startInactivityReminders(bot, matchId, match.user1Id, "in_match");
+    void startInactivityReminders(bot, matchId, match.user2Id, "in_match");
+  });
+  bot.action(/^cancel_ready_match:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const telegramId = ctx.from.id;
+    const matchId = ctx.match[1];
+    try {
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+    } catch {
+    }
+    const user = await User.findOne({ telegramId });
+    if (!user || user.state !== "pending_ready") {
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] cancel_ready_match \u2014 telegramId=${telegramId} matchId=${matchId} \u2014 not in pending_ready state.`);
+      await ctx.reply("\u26A0\uFE0F Action already processed.");
+      return;
+    }
+    const match = await Match.findOneAndUpdate(
+      { _id: matchId, status: "pending_ready" },
+      { status: "cancelled" },
+      { new: false }
+    );
+    if (!match) {
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] cancel_ready_match \u2014 telegramId=${telegramId} matchId=${matchId} \u2014 no pending_ready match found.`);
+      await ctx.reply("\u26A0\uFE0F Action already processed.");
+      return;
+    }
+    const partnerId = match.user1Id === telegramId ? match.user2Id : match.user1Id;
+    const isUser1 = match.user1Id === telegramId;
+    const partnerAlreadyReady = isUser1 ? match.user2ReadyToCut : match.user1ReadyToCut;
+    const cancelReadyTimer = readyTimers.get(matchId);
+    if (cancelReadyTimer) {
+      clearTimeout(cancelReadyTimer);
+      readyTimers.delete(matchId);
+    }
+    stopInactivityReminders(matchId, telegramId);
+    stopInactivityReminders(matchId, partnerId);
+    console.log(`[PRE_CUT_MATCH_CANCELLED_NO_PUNISHMENT] telegramId=${telegramId} matchId=${matchId} \u2014 cancelled before link reveal. No punishment.`);
+    await Queue.deleteOne({ telegramId });
+    await User.updateOne(
+      { telegramId },
+      { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null }
+    );
+    console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${telegramId} path=pre_cut_cancel_no_punishment`);
+    await ctx.reply(
+      `\u274C Match cancelled.
+
+No worries \u2014 no cooldown applied because the cut link was not revealed yet.`
+    );
+    const partner = await User.findOne({ telegramId: partnerId });
+    if (partner) {
+      await Queue.deleteOne({ telegramId: partnerId });
+      if (partnerAlreadyReady) {
+        console.log(`[READY_USER_AUTO_REQUEUED_AFTER_PARTNER_CANCEL] telegramId=${partnerId} \u2014 partner cancelled before link reveal, requeuing ready user.`);
+        const partnerLink = partner.pendingLink ?? (match.user1Id === partnerId ? match.link1 : match.link2);
+        if (partnerLink) {
+          await User.updateOne(
+            { telegramId: partnerId },
+            { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null }
+          );
+          await bot.telegram.sendMessage(
+            partnerId,
+            `\u26A0\uFE0F Your cut buddy cancelled before starting.
+
+You were ready, so we're finding another partner for you now \u{1F440}\u2728`
+          );
+          await addToQueue(bot, partnerId, partnerLink);
+        } else {
+          await User.updateOne(
+            { telegramId: partnerId },
+            { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null }
+          );
+          console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${partnerId} path=pre_cut_cancel_partner_no_link`);
+          try {
+            await bot.telegram.sendMessage(
+              partnerId,
+              `\u26A0\uFE0F Your cut buddy cancelled before starting.
+
+No worries \u2014 no cooldown applied. Submit a new cut link to find another partner \u{1F440}\u2728`
+            );
+          } catch {
+          }
+        }
+      } else {
+        await User.updateOne(
+          { telegramId: partnerId },
+          { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null }
+        );
+        console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${partnerId} path=pre_cut_cancel_partner_not_ready`);
+        try {
+          await bot.telegram.sendMessage(
+            partnerId,
+            `\u274C Match cancelled.
+
+Your partner decided not to start.
+
+No cooldown applied \u2014 submit a new cut link whenever you're ready \u{1F440}\u2728`
+          );
+        } catch {
+        }
+      }
+    }
+    const cancelU1Status = match.user1Id === telegramId ? "\u26A0\uFE0F Cancelled Before Link Reveal" : partnerAlreadyReady ? "\u2705 Was Ready To Cut" : "\u23F3 Had Not Pressed Ready";
+    const cancelU2Status = match.user2Id === telegramId ? "\u26A0\uFE0F Cancelled Before Link Reveal" : partnerAlreadyReady ? "\u2705 Was Ready To Cut" : "\u23F3 Had Not Pressed Ready";
+    await notifyAdminMatchCancelled(
+      bot,
+      match.user1Id,
+      match.user2Id,
+      `Pre-cut cancellation \u2014 user cancelled before links were revealed.`,
+      matchId,
+      {
+        responsibleId: telegramId,
+        user1Status: cancelU1Status,
+        user2Status: cancelU2Status,
+        systemActions: [
+          "Match cancelled",
+          "No punishment applied",
+          "Links were not revealed",
+          partnerAlreadyReady ? "Ready partner auto-requeued to find new match" : "Partner reset to awaiting_cut_link"
+        ]
+      }
+    );
   });
   bot.action("cancel_match", async (ctx) => {
     await ctx.answerCbQuery();
