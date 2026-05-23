@@ -1,0 +1,144 @@
+Fix duplicate cut link submission, duplicate queue entry, and duplicate broadcast.
+
+Current issue:
+Same user can submit the same cut link twice within a short time.
+
+Example:
+Same user ID: 5881371031
+Same TikTok: @niellndsh
+Same link submitted at:
+- 13:27:08
+- 13:27:39
+
+This causes:
+- duplicate admin notification
+- duplicate customer broadcast
+- possible duplicate queue entry
+- possible stuck match/state bugs
+
+━━━━━━━━━━━━━━━━━━
+REQUIRED FIX
+━━━━━━━━━━━━━━━━━━
+
+1. Add per-user cut link submit lock
+
+When user submits a cut link:
+- acquire submit lock by telegramId
+- if lock already active, reject duplicate immediately
+- release lock after processing completes
+
+Reply if duplicate:
+
+⏳ You already submitted a cut link.
+
+Please wait for a partner or finish your current swap first 👀✨
+
+━━━━━━━━━━━━━━━━━━
+2. Block submit if user is already busy
+
+Reject new cut link if user has:
+- activeMatchId not null
+- state = inqueue
+- isWaiting = true
+- pendingLink already exists
+- currently processing previous submit
+
+Reply:
+
+⏳ You already have an active cut request.
+
+Please wait for a partner or finish your current swap first 👀✨
+
+━━━━━━━━━━━━━━━━━━
+3. Add 60-second anti-spam submit cooldown
+
+Store:
+lastCutLinkSubmittedAt
+
+If user submits another cut link within 60 seconds:
+- reject it
+- do not notify admin
+- do not broadcast
+- do not queue
+
+Reply:
+
+Slow down bestie 😭
+
+You can submit another cut link in a few seconds.
+
+━━━━━━━━━━━━━━━━━━
+4. Prevent duplicate queue entries
+
+Before adding user to queue:
+- remove old queue entries for the same telegramId
+- ensure only one active queue record per telegramId
+- ensure only one pendingLink per user
+
+If duplicate found:
+- clean it
+- log it
+
+━━━━━━━━━━━━━━━━━━
+5. Make broadcast idempotent
+
+For each accepted cut link submission:
+- generate submissionId
+- attach submissionId to that submit event
+- admin notification and customer broadcast can only send once for that submissionId
+
+If same submissionId already broadcast:
+- do not send again
+
+━━━━━━━━━━━━━━━━━━
+6. Matchmaking safety
+
+Before creating match, confirm both users:
+- activeMatchId = null
+- state = inqueue
+- isWaiting = true
+- pendingLink exists
+- not banned/cooldown
+- not already processing another match
+
+If stale or duplicate state found:
+- clean stale state safely
+- do not create unsafe match
+
+━━━━━━━━━━━━━━━━━━
+IMPORTANT
+━━━━━━━━━━━━━━━━━━
+
+Do NOT change:
+- matchmaking rules
+- FIFO queue logic
+- proof flow
+- cooldown/ban logic
+- referral logic
+
+Only fix:
+- duplicate submit
+- duplicate queue
+- duplicate broadcast
+- stale submit processing
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add logs:
+- CUT_LINK_SUBMIT_LOCK_ACQUIRED
+- CUT_LINK_SUBMIT_LOCK_RELEASED
+- DUPLICATE_SUBMIT_BLOCKED
+- CUT_LINK_SUBMIT_COOLDOWN_BLOCKED
+- DUPLICATE_QUEUE_ENTRY_REMOVED
+- BROADCAST_ALREADY_SENT_FOR_SUBMISSION
+- STALE_SUBMIT_STATE_CLEANED
+
+━━━━━━━━━━━━━━━━━━
+BUILD
+━━━━━━━━━━━━━━━━━━
+
+Build project.
+Verify TypeScript errors.
+Commit and push GitHub main.

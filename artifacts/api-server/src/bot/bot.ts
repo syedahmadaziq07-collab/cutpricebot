@@ -135,6 +135,14 @@ const inactivityReminderTimers = new Map<string, ReturnType<typeof setTimeout>[]
 const adminBroadcastPending = new Set<number>(); // admins awaiting broadcast message input
 const pendingRejectReasons = new Map<number, { matchId: string; proofOwnerId: number }>(); // rejecters awaiting reason input
 
+// Submit dedup — in-memory lock to prevent concurrent/duplicate cut link submissions per user
+const cutLinkSubmitLocks = new Set<number>();
+// Anti-spam — tracks last cut link submission timestamp per user (in-memory; 60s window)
+const lastCutLinkSubmittedAt = new Map<number, number>();
+const CUT_LINK_SPAM_COOLDOWN_MS = 60_000;
+// Broadcast idempotency — prevents double-broadcast for the same user+link within the spam window
+const broadcastedSubmissions = new Map<string, number>(); // `${telegramId}:${link}` → timestamp
+
 const NO_RESPONSE_TIMEOUT_MS = 10 * 60 * 1000;
 const NO_RESPONSE_REMINDER_MS = 8 * 60 * 1000;
 const NO_RESPONSE_COOLDOWN_30M_MS = 30 * 60 * 1000;
@@ -1198,6 +1206,10 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
 
 // Add a user to the Queue collection (called only when tryMatchAtomic found no partner).
 async function addToQueue(_bot: Telegraf, telegramId: number, pendingLink: string): Promise<void> {
+  const existing = await Queue.findOne({ telegramId });
+  if (existing) {
+    console.log(`[DUPLICATE_QUEUE_ENTRY_REMOVED] telegramId=${telegramId} — removed stale queue entry (pendingLink="${existing.pendingLink ?? "null"}")`);
+  }
   await Queue.deleteOne({ telegramId });
   const queuedAt = new Date();
   await Queue.create({ telegramId, pendingLink, createdAt: queuedAt });
@@ -2883,82 +2895,132 @@ export function createBot(): Telegraf {
         return;
       }
 
-      console.log(`[VALID_CUT_LINK_ACCEPTED] telegramId=${telegramId} (@${user.tiktokUsername}) submitted valid cut link: "${text}"`);
-
-      const activeMatch = await Match.findOne({
-        $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
-        status: "active",
-      });
-
-      if (activeMatch) {
-        console.log(`[ACTIVE_MATCH_BLOCKED_NEW_LINK] telegramId=${telegramId} (@${user.tiktokUsername}) tried to submit new link while match ${activeMatch._id} is still active.`);
-        await ctx.reply(
-          "Please complete your current swap first 🤝\n\nYou can submit a new link after both proofs are approved.\n\nDon't worry — I'll send you a notification once your current swap is fully completed 🔔✨",
-        );
+      // ── Guard 1: anti-spam cooldown (60 s) ──────────────────────────────
+      const lastSubmitTs = lastCutLinkSubmittedAt.get(telegramId);
+      if (lastSubmitTs && Date.now() - lastSubmitTs < CUT_LINK_SPAM_COOLDOWN_MS) {
+        console.log(`[CUT_LINK_SUBMIT_COOLDOWN_BLOCKED] telegramId=${telegramId} (@${user.tiktokUsername}) — ${Math.ceil((CUT_LINK_SPAM_COOLDOWN_MS - (Date.now() - lastSubmitTs)) / 1000)}s remaining`);
+        await ctx.reply("Slow down bestie 😭\n\nYou can submit another cut link in a few seconds.");
         return;
       }
 
-      // Log diagnostic snapshot before queuing
-      console.log(
-        `[LINK_RECEIVED] ─── User sent cut link ───\n` +
-        `  telegramId          = ${telegramId}\n` +
-        `  username            = @${user.tiktokUsername}\n` +
-        `  state (before)      = ${user.state}\n` +
-        `  isWaiting (before)  = ${user.isWaiting}\n` +
-        `  pendingLink (before)= ${user.pendingLink ? `"${user.pendingLink}"` : "NULL"}`,
-      );
-
-      await ctx.reply("Locked in! 🔒 Hunting for your next cut buddy… ✨\n\n_(You're in the queue right now — matching you with someone active 👀)_", { parse_mode: "Markdown" });
-
-      // Admin notification — sent every time a valid cut link is submitted
-      const linkSubmitTime = new Date().toLocaleString("en-MY", {
-        timeZone: "Asia/Kuala_Lumpur",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-      });
-      const linkSubmitDisplayName = ctx.from.first_name ?? "Unknown";
-      const linkSubmitTgUsername = ctx.from.username ? `@${ctx.from.username}` : "No username";
-      const adminLinkMsg =
-        `🔗 USER SUBMITTED CUT LINK!\n` +
-        `━━━━━━━━━━━━━━━━━━\n` +
-        `• Name: ${linkSubmitDisplayName}\n` +
-        `• Telegram Username: ${linkSubmitTgUsername}\n` +
-        `• TikTok Username: @${user.tiktokUsername}\n` +
-        `• ID: ${telegramId}\n` +
-        `• Link: ${text}\n` +
-        `• Time: ${linkSubmitTime} MYT\n` +
-        `━━━━━━━━━━━━━━━━━━\n` +
-        `📌 Current user is now looking for a cut partner ✨`;
-      for (const adminId of getAdminIds()) {
-        try {
-          await bot.telegram.sendMessage(adminId, adminLinkMsg);
-          console.log(`[ADMIN_LINK_SUBMIT_NOTIFIED] telegramId=${telegramId} (@${user.tiktokUsername}) — notified adminId=${adminId} with link="${text}"`);
-        } catch (err) {
-          console.error(`[ADMIN_LINK_SUBMIT_NOTIFY_FAILED] telegramId=${telegramId} — failed to notify adminId=${adminId}: ${(err as Error).message}`);
-        }
+      // ── Guard 2: in-memory submit lock (prevents concurrent duplicate) ──
+      if (cutLinkSubmitLocks.has(telegramId)) {
+        console.log(`[DUPLICATE_SUBMIT_BLOCKED] telegramId=${telegramId} (@${user.tiktokUsername}) — submit lock already held`);
+        await ctx.reply("⏳ You already submitted a cut link.\n\nPlease wait for a partner or finish your current swap first 👀✨");
+        return;
       }
 
-      // Customer broadcast — ALWAYS fire before matchmaking, fully isolated from queue/match logic
-      console.log(`[CUSTOMER_BROADCAST_TRIGGERED_AFTER_CUT_LINK] telegramId=${telegramId} (@${user.tiktokUsername}) link="${text}"`);
+      // ── Guard 3: already queued / in match / has pending link ───────────
+      if (user.isWaiting || user.activeMatchId || user.pendingLink) {
+        console.log(`[DUPLICATE_SUBMIT_BLOCKED] telegramId=${telegramId} (@${user.tiktokUsername}) — busy: isWaiting=${user.isWaiting} activeMatchId=${user.activeMatchId ?? "null"} hasPendingLink=${!!user.pendingLink}`);
+        await ctx.reply("⏳ You already have an active cut request.\n\nPlease wait for a partner or finish your current swap first 👀✨");
+        return;
+      }
+
+      // Acquire submit lock + record submission timestamp
+      cutLinkSubmitLocks.add(telegramId);
+      lastCutLinkSubmittedAt.set(telegramId, Date.now());
+      console.log(`[CUT_LINK_SUBMIT_LOCK_ACQUIRED] telegramId=${telegramId} (@${user.tiktokUsername})`);
+
       try {
-        await broadcastCutLinkNotification(bot, user.tiktokUsername, telegramId, "cut_link_submit", text);
-      } catch (err) {
-        console.error(`[CUSTOMER_BROADCAST_FAILED] telegramId=${telegramId} (@${user.tiktokUsername}): ${(err as Error).message}`);
-      }
+        // Re-read from DB inside the lock to catch any race conditions
+        const freshUser = await User.findOne({ telegramId }).select("state isWaiting activeMatchId pendingLink tiktokUsername");
+        if (freshUser && (freshUser.isWaiting || freshUser.activeMatchId || freshUser.pendingLink)) {
+          console.log(`[STALE_SUBMIT_STATE_CLEANED] telegramId=${telegramId} — race condition caught inside lock: isWaiting=${freshUser.isWaiting} activeMatchId=${freshUser.activeMatchId ?? "null"} hasPendingLink=${!!freshUser.pendingLink}`);
+          await ctx.reply("⏳ You already have an active cut request.\n\nPlease wait for a partner or finish your current swap first 👀✨");
+          return;
+        }
 
-      // Try atomic match first — if no partner, enter queue
-      const immediatelyMatched = await tryMatchAtomic(bot, telegramId, text);
-      if (!immediatelyMatched) {
-        // No partner available — enter queue
-        await addToQueue(bot, telegramId, text);
-      }
+        console.log(`[VALID_CUT_LINK_ACCEPTED] telegramId=${telegramId} (@${user.tiktokUsername}) submitted valid cut link: "${text}"`);
 
-      return;
+        const activeMatch = await Match.findOne({
+          $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
+          status: "active",
+        });
+
+        if (activeMatch) {
+          console.log(`[ACTIVE_MATCH_BLOCKED_NEW_LINK] telegramId=${telegramId} (@${user.tiktokUsername}) tried to submit new link while match ${activeMatch._id} is still active.`);
+          await ctx.reply(
+            "Please complete your current swap first 🤝\n\nYou can submit a new link after both proofs are approved.\n\nDon't worry — I'll send you a notification once your current swap is fully completed 🔔✨",
+          );
+          return;
+        }
+
+        // Log diagnostic snapshot before queuing
+        console.log(
+          `[LINK_RECEIVED] ─── User sent cut link ───\n` +
+          `  telegramId          = ${telegramId}\n` +
+          `  username            = @${user.tiktokUsername}\n` +
+          `  state (before)      = ${user.state}\n` +
+          `  isWaiting (before)  = ${user.isWaiting}\n` +
+          `  pendingLink (before)= ${user.pendingLink ? `"${user.pendingLink}"` : "NULL"}`,
+        );
+
+        await ctx.reply("Locked in! 🔒 Hunting for your next cut buddy… ✨\n\n_(You're in the queue right now — matching you with someone active 👀)_", { parse_mode: "Markdown" });
+
+        // Admin notification — sent every time a valid cut link is submitted
+        const linkSubmitTime = new Date().toLocaleString("en-MY", {
+          timeZone: "Asia/Kuala_Lumpur",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        });
+        const linkSubmitDisplayName = ctx.from.first_name ?? "Unknown";
+        const linkSubmitTgUsername = ctx.from.username ? `@${ctx.from.username}` : "No username";
+        const adminLinkMsg =
+          `🔗 USER SUBMITTED CUT LINK!\n` +
+          `━━━━━━━━━━━━━━━━━━\n` +
+          `• Name: ${linkSubmitDisplayName}\n` +
+          `• Telegram Username: ${linkSubmitTgUsername}\n` +
+          `• TikTok Username: @${user.tiktokUsername}\n` +
+          `• ID: ${telegramId}\n` +
+          `• Link: ${text}\n` +
+          `• Time: ${linkSubmitTime} MYT\n` +
+          `━━━━━━━━━━━━━━━━━━\n` +
+          `📌 Current user is now looking for a cut partner ✨`;
+        for (const adminId of getAdminIds()) {
+          try {
+            await bot.telegram.sendMessage(adminId, adminLinkMsg);
+            console.log(`[ADMIN_LINK_SUBMIT_NOTIFIED] telegramId=${telegramId} (@${user.tiktokUsername}) — notified adminId=${adminId} with link="${text}"`);
+          } catch (err) {
+            console.error(`[ADMIN_LINK_SUBMIT_NOTIFY_FAILED] telegramId=${telegramId} — failed to notify adminId=${adminId}: ${(err as Error).message}`);
+          }
+        }
+
+        // Customer broadcast — idempotent: same user+link only broadcasts once per 60s window
+        const broadcastKey = `${telegramId}:${text}`;
+        const lastBroadcastTs = broadcastedSubmissions.get(broadcastKey);
+        if (lastBroadcastTs && Date.now() - lastBroadcastTs < CUT_LINK_SPAM_COOLDOWN_MS) {
+          console.log(`[BROADCAST_ALREADY_SENT_FOR_SUBMISSION] telegramId=${telegramId} (@${user.tiktokUsername}) — skipping duplicate broadcast for same link`);
+        } else {
+          broadcastedSubmissions.set(broadcastKey, Date.now());
+          if (broadcastedSubmissions.size > 500) {
+            broadcastedSubmissions.delete(broadcastedSubmissions.keys().next().value!);
+          }
+          console.log(`[CUSTOMER_BROADCAST_TRIGGERED_AFTER_CUT_LINK] telegramId=${telegramId} (@${user.tiktokUsername}) link="${text}"`);
+          try {
+            await broadcastCutLinkNotification(bot, user.tiktokUsername, telegramId, "cut_link_submit", text);
+          } catch (err) {
+            console.error(`[CUSTOMER_BROADCAST_FAILED] telegramId=${telegramId} (@${user.tiktokUsername}): ${(err as Error).message}`);
+          }
+        }
+
+        // Try atomic match first — if no partner, enter queue
+        const immediatelyMatched = await tryMatchAtomic(bot, telegramId, text);
+        if (!immediatelyMatched) {
+          // No partner available — enter queue
+          await addToQueue(bot, telegramId, text);
+        }
+
+        return;
+      } finally {
+        cutLinkSubmitLocks.delete(telegramId);
+        console.log(`[CUT_LINK_SUBMIT_LOCK_RELEASED] telegramId=${telegramId} (@${user.tiktokUsername})`);
+      }
     }
 
     if (user.state === "inqueue") {
