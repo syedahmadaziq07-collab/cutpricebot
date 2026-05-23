@@ -1,0 +1,90 @@
+Fix auto-rematch behavior after partner inactivity timeout.
+
+Current issue:
+When one partner ghosts / fails to respond, the honest user is automatically rematched without sending a new link.
+
+This confuses beginner users because they suddenly receive a new match without realizing they are back in queue.
+
+━━━━━━━━━━━━━━━━━━
+REQUIRED FIX
+━━━━━━━━━━━━━━━━━━
+
+When:
+- partner fails to respond
+- proof approval timeout happens
+- match auto-cancels
+- inactivity timeout triggers
+
+DO NOT auto-rematch anyone.
+
+This includes:
+- the inactive/ghosting user
+- the honest user who already submitted proof
+
+━━━━━━━━━━━━━━━━━━
+HONEST USER FLOW
+━━━━━━━━━━━━━━━━━━
+
+After timeout, send this to the honest user:
+
+❌ Your previous partner did not respond in time.
+
+✅ Your proof was successfully submitted.
+
+⚠️ Your partner has received a cooldown/restriction for inactivity.
+
+You are NOT currently in queue.
+
+If you want a new partner, please send a new cut link to start again 👀✨
+
+🎟 Remaining cuts: {remainingCuts}
+
+━━━━━━━━━━━━━━━━━━
+STATE CLEANUP
+━━━━━━━━━━━━━━━━━━
+
+After timeout/cancel:
+
+For both users:
+- clear activeMatchId
+- clear match state
+- clear proof state
+- set isWaiting = false
+- clear queuedAt
+- do NOT insert into queue automatically
+- do NOT call tryMatchAtomic automatically
+- do NOT broadcast as if user submitted a new link
+
+━━━━━━━━━━━━━━━━━━
+REMATCH RULE
+━━━━━━━━━━━━━━━━━━
+
+User can only rematch if they manually send a NEW TikTok cut link.
+
+No new link = no queue.
+No queue = no new match.
+
+━━━━━━━━━━━━━━━━━━
+IMPORTANT
+━━━━━━━━━━━━━━━━━━
+
+- NEVER auto-rematch silently
+- NEVER auto-place honest user back into queue
+- User consent required via new link submission
+- Keep punishment system for inactive user
+- Keep completed swaps unchanged
+- Keep normal manual link submit flow unchanged
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add logs:
+- AUTO_REMATCH_BLOCKED
+- HONEST_USER_REMATCH_STOPPED
+- MATCH_FULLY_TERMINATED
+- USER_MANUAL_REMATCH_REQUIRED
+
+Build project.
+Verify TypeScript errors.
+Commit and push GitHub main.

@@ -1,0 +1,102 @@
+Add escalating inactivity reminder system for active swaps and proof flow.
+
+Goal:
+Make users take active swaps seriously and reduce ghosting/inactive behavior.
+
+━━━━━━━━━━━━━━━━━━
+REMINDER SYSTEM
+━━━━━━━━━━━━━━━━━━
+
+For users who are inactive during:
+- active match
+- waiting_done_cut
+- awaiting_proof_account_selection
+- awaiting_proof_cut_username
+- awaiting_proof_screenshot
+- awaiting_proof_approval
+
+Send escalating reminders automatically.
+
+━━━━━━━━━━━━━━━━━━
+REMINDER MESSAGES
+━━━━━━━━━━━━━━━━━━
+
+Minute 1:
+👀 Your cut buddy is waiting for your action.
+Please complete this step now.
+
+Minute 2:
+⚠️ System Warning:
+Ignoring active swaps may result in account restrictions.
+
+Minute 4:
+🚨 Your partner is still waiting.
+Repeated incomplete swaps are monitored as suspicious activity.
+
+Minute 6:
+⛔ Serious Warning:
+Users who repeatedly abandon swaps may receive temporary or permanent restrictions.
+
+Minute 8:
+📛 FINAL WARNING
+Failure to complete this swap may trigger automatic enforcement action on your account.
+
+Minute 10:
+❌ Match expired.
+
+This inactive swap has been automatically cancelled by the system due to your inactivity.
+
+⚠️ Your account has been restricted from using this bot for 24 hours because of this action.
+
+If this behavior is repeated 3 times, your account may receive a permanent ban from this bot for suspicious activity.
+
+Please contact admin if you believe this was a mistake.
+
+━━━━━━━━━━━━━━━━━━
+IMPORTANT
+━━━━━━━━━━━━━━━━━━
+
+- Stop reminders immediately once user completes current step
+- Do NOT send duplicate reminders
+- Do NOT create overlapping timers
+- Use existing 10-minute timeout system
+- Use existing cooldown/ban system
+- Do NOT affect completed swaps
+- Do NOT affect matchmaking logic
+
+━━━━━━━━━━━━━━━━━━
+STATE-SPECIFIC REMINDERS
+━━━━━━━━━━━━━━━━━━
+
+If waiting_done_cut:
+→ remind user to press ✅ Done Cut
+
+If awaiting_proof_account_selection:
+→ remind user to choose TikTok account
+
+If awaiting_proof_cut_username:
+→ remind user to enter TikTok username
+
+If awaiting_proof_screenshot:
+→ remind user to upload screenshot proof
+
+If awaiting_proof_approval:
+→ remind partner to approve/reject proof
+
+━━━━━━━━━━━━━━━━━━
+LOGS
+━━━━━━━━━━━━━━━━━━
+
+Add logs:
+- INACTIVITY_REMINDER_SENT
+- FINAL_TIMEOUT_WARNING_SENT
+- REMINDER_STOPPED_AFTER_ACTION
+- MATCH_AUTO_CANCELLED_FOR_INACTIVITY
+
+━━━━━━━━━━━━━━━━━━
+BUILD
+━━━━━━━━━━━━━━━━━━
+
+Build project.
+Verify TypeScript errors.
+Commit and push GitHub main.

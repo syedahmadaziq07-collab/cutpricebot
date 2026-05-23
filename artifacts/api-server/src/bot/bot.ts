@@ -131,6 +131,7 @@ const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const matchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const proofTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const proofReminderTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const inactivityReminderTimers = new Map<string, ReturnType<typeof setTimeout>[]>();
 const adminBroadcastPending = new Set<number>(); // admins awaiting broadcast message input
 const pendingRejectReasons = new Map<number, { matchId: string; proofOwnerId: number }>(); // rejecters awaiting reason input
 
@@ -138,6 +139,99 @@ const NO_RESPONSE_TIMEOUT_MS = 10 * 60 * 1000;
 const NO_RESPONSE_REMINDER_MS = 8 * 60 * 1000;
 const NO_RESPONSE_COOLDOWN_30M_MS = 30 * 60 * 1000;
 const NO_RESPONSE_24H_MS = 24 * 60 * 60 * 1000;
+
+const INACTIVITY_ACTIVE_STATES = [
+  "in_match",
+  "awaiting_proof_account_selection",
+  "awaiting_proof_cut_username",
+  "awaiting_proof",
+  "awaiting_partner_approval",
+];
+
+function getStateHint(state: string): string {
+  switch (state) {
+    case "in_match": return "👉 Please press ✅ Done Cut once you've completed the cut.";
+    case "awaiting_proof_account_selection": return "👉 Please choose which TikTok account you used.";
+    case "awaiting_proof_cut_username": return "👉 Please type the TikTok username you used to cut your partner's link.";
+    case "awaiting_proof": return "👉 Please upload your screenshot proof now.";
+    case "awaiting_partner_approval": return "👉 Please approve or reject your partner's proof.";
+    default: return "";
+  }
+}
+
+function stopInactivityReminders(matchId: string, userId: number): void {
+  const key = `inactivity:${matchId}:${userId}`;
+  const timers = inactivityReminderTimers.get(key);
+  if (timers && timers.length > 0) {
+    for (const t of timers) clearTimeout(t);
+    inactivityReminderTimers.delete(key);
+    console.log(`[REMINDER_STOPPED_AFTER_ACTION] matchId=${matchId} userId=${userId}`);
+  }
+}
+
+async function startInactivityReminders(
+  bot: Telegraf,
+  matchId: string,
+  userId: number,
+  state: string,
+  customCheck?: (matchId: string) => Promise<boolean>,
+): Promise<void> {
+  stopInactivityReminders(matchId, userId);
+  const key = `inactivity:${matchId}:${userId}`;
+  const hint = getStateHint(state);
+
+  const steps: Array<{ delayMin: number; msg: string; isFinal?: true }> = [
+    {
+      delayMin: 1,
+      msg: `👀 Your cut buddy is waiting for your action.\nPlease complete this step now.${hint ? "\n\n" + hint : ""}`,
+    },
+    {
+      delayMin: 2,
+      msg: "⚠️ System Warning:\nIgnoring active swaps may result in account restrictions.",
+    },
+    {
+      delayMin: 4,
+      msg: "🚨 Your partner is still waiting.\nRepeated incomplete swaps are monitored as suspicious activity.",
+    },
+    {
+      delayMin: 6,
+      msg: "⛔ Serious Warning:\nUsers who repeatedly abandon swaps may receive temporary or permanent restrictions.",
+    },
+    {
+      delayMin: 8,
+      msg: "📛 FINAL WARNING\nFailure to complete this swap may trigger automatic enforcement action on your account.",
+      isFinal: true,
+    },
+  ];
+
+  const timers: ReturnType<typeof setTimeout>[] = steps.map(({ delayMin, msg, isFinal }) =>
+    setTimeout(async () => {
+      try {
+        const liveMatch = await Match.findOne({ _id: matchId, status: "active" });
+        if (!liveMatch) return;
+        let shouldSend: boolean;
+        if (customCheck) {
+          shouldSend = await customCheck(matchId);
+        } else {
+          const liveUser = await User.findOne({ telegramId: userId });
+          shouldSend = !!liveUser && INACTIVITY_ACTIVE_STATES.includes(liveUser.state);
+        }
+        if (!shouldSend) return;
+        await bot.telegram.sendMessage(userId, msg);
+        if (isFinal) {
+          console.log(`[FINAL_TIMEOUT_WARNING_SENT] matchId=${matchId} userId=${userId} state=${state}`);
+        } else {
+          console.log(`[INACTIVITY_REMINDER_SENT] matchId=${matchId} userId=${userId} state=${state} minuteMark=${delayMin}`);
+        }
+      } catch (err) {
+        console.error(`[INACTIVITY_REMINDER_FAILED] matchId=${matchId} userId=${userId} min=${delayMin}: ${(err as Error).message}`);
+      }
+    }, delayMin * 60 * 1000),
+  );
+
+  inactivityReminderTimers.set(key, timers);
+  console.log(`[INACTIVITY_REMINDERS_ARMED] matchId=${matchId} userId=${userId} state=${state} — reminders at min 1,2,4,6,8.`);
+}
 
 function generateReferralCode(): string {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -321,6 +415,7 @@ async function performStuckCleanup(bot: Telegraf): Promise<{ clearedMatches: num
           const rptKey = `proof_reminder:${timerId}:${uid}`;
           const rpt = proofReminderTimers.get(rptKey);
           if (rpt) { clearTimeout(rpt); proofReminderTimers.delete(rptKey); }
+          stopInactivityReminders(timerId, uid);
         }
 
         clearedMatches++;
@@ -663,6 +758,8 @@ async function handleProofTimeout(
   proofTimers.delete(`proof:${matchId}:${proofOwnerId}`);
   const expiredReminder = proofReminderTimers.get(`proof_reminder:${matchId}:${proofOwnerId}`);
   if (expiredReminder) { clearTimeout(expiredReminder); proofReminderTimers.delete(`proof_reminder:${matchId}:${proofOwnerId}`); }
+  stopInactivityReminders(matchId, proofOwnerId);
+  stopInactivityReminders(matchId, inactivePartnerId);
 
   // Admin notification — proof approval timeout
   await notifyAdminMatchCancelled(
@@ -744,6 +841,9 @@ async function handleMatchExpiry(
     }
   }
   matchTimers.delete(matchId);
+  stopInactivityReminders(matchId, user1Id);
+  stopInactivityReminders(matchId, user2Id);
+  console.log(`[MATCH_AUTO_CANCELLED_FOR_INACTIVITY] matchId=${matchId} — 10-minute window elapsed, match cancelled due to inactivity.`);
 }
 
 // Shared helper — sends ⚠️ MATCH CANCELLED / TIMEOUT notification to all admins.
@@ -940,6 +1040,9 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
   }, 10 * 60 * 1000);
   matchTimers.set(matchId, timer);
 
+  void startInactivityReminders(bot, matchId, currentTelegramId, "in_match");
+  void startInactivityReminders(bot, matchId, partner.telegramId, "in_match");
+
   void matchDoc; // silence unused-var warning
   return true;
 }
@@ -1059,6 +1162,7 @@ async function checkAndCompleteMatch(bot: Telegraf, matchId: string): Promise<vo
     const rKey = `proof_reminder:${matchId}:${uid}`;
     const rt = proofReminderTimers.get(rKey);
     if (rt) { clearTimeout(rt); proofReminderTimers.delete(rKey); }
+    stopInactivityReminders(matchId, uid);
   }
 
   await Match.updateOne({ _id: matchId }, { status: "completed" });
@@ -2330,6 +2434,14 @@ export function createBot(): Telegraf {
     await User.updateOne({ telegramId }, { state: "awaiting_partner_approval", proofCutByUsername: null });
     await ctx.reply("✅ Proof received successfully!\n\nYour cut buddy is checking it now 👀✨");
 
+    stopInactivityReminders(matchId, telegramId);
+    const isUser1ForApproval = isUser1;
+    void startInactivityReminders(bot, matchId, partnerId, "awaiting_partner_approval", async (mid) => {
+      const m = await Match.findOne({ _id: mid, status: "active" });
+      if (!m) return false;
+      return isUser1ForApproval ? !m.user1ProofApprovedByPartner : !m.user2ProofApprovedByPartner;
+    });
+
     const approveButtons = Markup.inlineKeyboard([
       Markup.button.callback("✅ Approve Proof", `approve_proof:${matchId}:${telegramId}`),
       Markup.button.callback("❌ Reject Proof", `reject_proof:${matchId}:${telegramId}`),
@@ -2355,26 +2467,6 @@ export function createBot(): Telegraf {
     }, NO_RESPONSE_TIMEOUT_MS);
     proofTimers.set(proofTimerKey, proofTimer);
     console.log(`[NO_RESPONSE_TIMEOUT_STARTED] matchId=${matchId} proofOwnerId=${telegramId} inactivePartnerId=${partnerId} — 10-min timer started.`);
-
-    // Start 8-minute reminder — nudge the inactive partner before timeout fires
-    const reminderKey = `proof_reminder:${matchId}:${telegramId}`;
-    if (proofReminderTimers.has(reminderKey)) clearTimeout(proofReminderTimers.get(reminderKey)!);
-    const reminderTimer = setTimeout(async () => {
-      proofReminderTimers.delete(reminderKey);
-      // Only send if the match is still active and partner hasn't responded yet
-      try {
-        const stillActive = await Match.findOne({ _id: matchId, status: "active" });
-        if (!stillActive) return;
-        await bot.telegram.sendMessage(
-          partnerId,
-          "⏰ Your cut buddy is waiting for your response 👀✨\n\nPlease approve or reject the proof before the timer ends 🤝",
-        );
-        console.log(`[PROOF_REMINDER_SENT] matchId=${matchId} inactivePartnerId=${partnerId}`);
-      } catch (err) {
-        console.error(`[PROOF_REMINDER_FAILED] matchId=${matchId} partnerId=${partnerId}: ${(err as Error).message}`);
-      }
-    }, NO_RESPONSE_REMINDER_MS);
-    proofReminderTimers.set(reminderKey, reminderTimer);
   });
 
   bot.on(message("text"), async (ctx) => {
@@ -2683,6 +2775,12 @@ export function createBot(): Telegraf {
       console.log(`[PROOF_ACCOUNT_CUSTOM_ENTERED] telegramId=${telegramId} — entered username: "${normalizedUsername}"`);
       console.log(`[PROOF_ACCOUNT_SAVED] telegramId=${telegramId} proofCutByUsername=@${normalizedUsername}`);
 
+      if (user.activeMatchId) {
+        const mid = user.activeMatchId.toString();
+        stopInactivityReminders(mid, telegramId);
+        void startInactivityReminders(bot, mid, telegramId, "awaiting_proof");
+      }
+
       await ctx.reply("📸 Okieee now send a screenshot as proof that you've completed your partner's cut ✨");
       return;
     }
@@ -2743,6 +2841,12 @@ export function createBot(): Telegraf {
 
     console.log(`[PROOF_ACCOUNT_SELECTION_STARTED] telegramId=${telegramId}`);
 
+    const matchIdForReminder = updated.activeMatchId?.toString();
+    if (matchIdForReminder) {
+      stopInactivityReminders(matchIdForReminder, telegramId);
+      void startInactivityReminders(bot, matchIdForReminder, telegramId, "awaiting_proof_account_selection");
+    }
+
     const user = await User.findOne({ telegramId });
     const registeredUsername = user?.tiktokUsername ?? "unknown";
 
@@ -2773,6 +2877,12 @@ export function createBot(): Telegraf {
     console.log(`[PROOF_ACCOUNT_REGISTERED_SELECTED] telegramId=${telegramId} — using registered @${registeredUsername}`);
     console.log(`[PROOF_ACCOUNT_SAVED] telegramId=${telegramId} proofCutByUsername=@${registeredUsername}`);
 
+    if (user.activeMatchId) {
+      const mid = user.activeMatchId.toString();
+      stopInactivityReminders(mid, telegramId);
+      void startInactivityReminders(bot, mid, telegramId, "awaiting_proof");
+    }
+
     await ctx.reply("📸 Okieee now send a screenshot as proof that you've completed your partner's cut ✨");
   });
 
@@ -2790,6 +2900,12 @@ export function createBot(): Telegraf {
 
     await User.updateOne({ telegramId }, { state: "awaiting_proof_cut_username" });
 
+    if (user.activeMatchId) {
+      const mid = user.activeMatchId.toString();
+      stopInactivityReminders(mid, telegramId);
+      void startInactivityReminders(bot, mid, telegramId, "awaiting_proof_cut_username");
+    }
+
     await ctx.reply("✍️ Please type the TikTok username you used to cut your partner's link 👇\n\nExample:\n@username");
   });
 
@@ -2806,6 +2922,12 @@ export function createBot(): Telegraf {
     }
 
     await User.updateOne({ telegramId }, { state: "in_match" });
+
+    if (user.activeMatchId) {
+      const mid = user.activeMatchId.toString();
+      stopInactivityReminders(mid, telegramId);
+      void startInactivityReminders(bot, mid, telegramId, "in_match");
+    }
 
     await ctx.reply("❌ Cancelled. You can press ✅ Done Cut again when you're ready.");
   });
@@ -2845,6 +2967,9 @@ export function createBot(): Telegraf {
     const timerId = match._id.toString();
     const existingTimer = matchTimers.get(timerId);
     if (existingTimer) { clearTimeout(existingTimer); matchTimers.delete(timerId); }
+
+    stopInactivityReminders(timerId, telegramId);
+    stopInactivityReminders(timerId, partnerId);
 
     const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);
     await User.updateOne(
@@ -2933,6 +3058,7 @@ export function createBot(): Telegraf {
 
     await User.updateOne({ telegramId: proofOwnerId }, { $inc: { totalApprovedCount: 1 } });
     console.log(`[PROOF_APPROVED] telegramId=${telegramId} approved proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
+    stopInactivityReminders(matchId, telegramId);
     await bot.telegram.sendMessage(proofOwnerId, "🎉 Your cut buddy approved your proof!\n\nSwap completed successfully 🤝✨");
     await checkAndCompleteMatch(bot, matchId);
   });
@@ -2971,6 +3097,7 @@ export function createBot(): Telegraf {
     // Enter two-step flow: ask for reason before finalising rejection
     pendingRejectReasons.set(telegramId, { matchId, proofOwnerId });
     await User.updateOne({ telegramId }, { state: "awaiting_reject_reason" });
+    stopInactivityReminders(matchId, telegramId);
     console.log(`[REJECT_REASON_REQUESTED] telegramId=${telegramId} matchId=${matchId} proofOwnerId=${proofOwnerId}`);
 
     await ctx.reply(
@@ -3007,6 +3134,8 @@ export function createBot(): Telegraf {
     const rKey = `proof_reminder:${timerId}:${proofOwnerId}`;
     const existingReminder = proofReminderTimers.get(rKey);
     if (existingReminder) { clearTimeout(existingReminder); proofReminderTimers.delete(rKey); }
+    stopInactivityReminders(timerId, proofOwnerId);
+    stopInactivityReminders(timerId, telegramId);
 
     // Apply 24h cooldown to the proof owner
     const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);

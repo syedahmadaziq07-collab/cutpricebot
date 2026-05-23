@@ -43139,12 +43139,100 @@ var COOLDOWN_MS = 24 * 60 * 60 * 1e3;
 var matchTimers = /* @__PURE__ */ new Map();
 var proofTimers = /* @__PURE__ */ new Map();
 var proofReminderTimers = /* @__PURE__ */ new Map();
+var inactivityReminderTimers = /* @__PURE__ */ new Map();
 var adminBroadcastPending = /* @__PURE__ */ new Set();
 var pendingRejectReasons = /* @__PURE__ */ new Map();
 var NO_RESPONSE_TIMEOUT_MS = 10 * 60 * 1e3;
 var NO_RESPONSE_REMINDER_MS = 8 * 60 * 1e3;
 var NO_RESPONSE_COOLDOWN_30M_MS = 30 * 60 * 1e3;
 var NO_RESPONSE_24H_MS = 24 * 60 * 60 * 1e3;
+var INACTIVITY_ACTIVE_STATES = [
+  "in_match",
+  "awaiting_proof_account_selection",
+  "awaiting_proof_cut_username",
+  "awaiting_proof",
+  "awaiting_partner_approval"
+];
+function getStateHint(state) {
+  switch (state) {
+    case "in_match":
+      return "\u{1F449} Please press \u2705 Done Cut once you've completed the cut.";
+    case "awaiting_proof_account_selection":
+      return "\u{1F449} Please choose which TikTok account you used.";
+    case "awaiting_proof_cut_username":
+      return "\u{1F449} Please type the TikTok username you used to cut your partner's link.";
+    case "awaiting_proof":
+      return "\u{1F449} Please upload your screenshot proof now.";
+    case "awaiting_partner_approval":
+      return "\u{1F449} Please approve or reject your partner's proof.";
+    default:
+      return "";
+  }
+}
+function stopInactivityReminders(matchId, userId) {
+  const key = `inactivity:${matchId}:${userId}`;
+  const timers = inactivityReminderTimers.get(key);
+  if (timers && timers.length > 0) {
+    for (const t of timers) clearTimeout(t);
+    inactivityReminderTimers.delete(key);
+    console.log(`[REMINDER_STOPPED_AFTER_ACTION] matchId=${matchId} userId=${userId}`);
+  }
+}
+async function startInactivityReminders(bot, matchId, userId, state, customCheck) {
+  stopInactivityReminders(matchId, userId);
+  const key = `inactivity:${matchId}:${userId}`;
+  const hint = getStateHint(state);
+  const steps = [
+    {
+      delayMin: 1,
+      msg: `\u{1F440} Your cut buddy is waiting for your action.
+Please complete this step now.${hint ? "\n\n" + hint : ""}`
+    },
+    {
+      delayMin: 2,
+      msg: "\u26A0\uFE0F System Warning:\nIgnoring active swaps may result in account restrictions."
+    },
+    {
+      delayMin: 4,
+      msg: "\u{1F6A8} Your partner is still waiting.\nRepeated incomplete swaps are monitored as suspicious activity."
+    },
+    {
+      delayMin: 6,
+      msg: "\u26D4 Serious Warning:\nUsers who repeatedly abandon swaps may receive temporary or permanent restrictions."
+    },
+    {
+      delayMin: 8,
+      msg: "\u{1F4DB} FINAL WARNING\nFailure to complete this swap may trigger automatic enforcement action on your account.",
+      isFinal: true
+    }
+  ];
+  const timers = steps.map(
+    ({ delayMin, msg, isFinal }) => setTimeout(async () => {
+      try {
+        const liveMatch = await Match.findOne({ _id: matchId, status: "active" });
+        if (!liveMatch) return;
+        let shouldSend;
+        if (customCheck) {
+          shouldSend = await customCheck(matchId);
+        } else {
+          const liveUser = await User.findOne({ telegramId: userId });
+          shouldSend = !!liveUser && INACTIVITY_ACTIVE_STATES.includes(liveUser.state);
+        }
+        if (!shouldSend) return;
+        await bot.telegram.sendMessage(userId, msg);
+        if (isFinal) {
+          console.log(`[FINAL_TIMEOUT_WARNING_SENT] matchId=${matchId} userId=${userId} state=${state}`);
+        } else {
+          console.log(`[INACTIVITY_REMINDER_SENT] matchId=${matchId} userId=${userId} state=${state} minuteMark=${delayMin}`);
+        }
+      } catch (err) {
+        console.error(`[INACTIVITY_REMINDER_FAILED] matchId=${matchId} userId=${userId} min=${delayMin}: ${err.message}`);
+      }
+    }, delayMin * 60 * 1e3)
+  );
+  inactivityReminderTimers.set(key, timers);
+  console.log(`[INACTIVITY_REMINDERS_ARMED] matchId=${matchId} userId=${userId} state=${state} \u2014 reminders at min 1,2,4,6,8.`);
+}
 function generateReferralCode() {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
@@ -43294,6 +43382,7 @@ async function performStuckCleanup(bot) {
             clearTimeout(rpt);
             proofReminderTimers.delete(rptKey);
           }
+          stopInactivityReminders(timerId, uid);
         }
         clearedMatches++;
         console.log(`[STUCK_MATCH_CLEARED] matchId=${timerId} telegramId=${telegramId} state=${state}`);
@@ -43568,6 +43657,8 @@ async function handleProofTimeout(bot, matchId, proofOwnerId, inactivePartnerId)
     clearTimeout(expiredReminder);
     proofReminderTimers.delete(`proof_reminder:${matchId}:${proofOwnerId}`);
   }
+  stopInactivityReminders(matchId, proofOwnerId);
+  stopInactivityReminders(matchId, inactivePartnerId);
   await notifyAdminMatchCancelled(
     bot,
     match.user1Id,
@@ -43647,6 +43738,9 @@ async function handleMatchExpiry(bot, matchId, user1Id, user2Id) {
     }
   }
   matchTimers.delete(matchId);
+  stopInactivityReminders(matchId, user1Id);
+  stopInactivityReminders(matchId, user2Id);
+  console.log(`[MATCH_AUTO_CANCELLED_FOR_INACTIVITY] matchId=${matchId} \u2014 10-minute window elapsed, match cancelled due to inactivity.`);
 }
 async function notifyAdminMatchCancelled(bot, user1Id, user2Id, reason, matchId) {
   try {
@@ -43817,6 +43911,8 @@ Go show some love and finish the cut first \u{1F91D}\u2728`,
     await handleMatchExpiry(bot, matchId, currentTelegramId, partner.telegramId);
   }, 10 * 60 * 1e3);
   matchTimers.set(matchId, timer);
+  void startInactivityReminders(bot, matchId, currentTelegramId, "in_match");
+  void startInactivityReminders(bot, matchId, partner.telegramId, "in_match");
   void matchDoc;
   return true;
 }
@@ -43916,6 +44012,7 @@ async function checkAndCompleteMatch(bot, matchId) {
       clearTimeout(rt);
       proofReminderTimers.delete(rKey);
     }
+    stopInactivityReminders(matchId, uid);
   }
   await Match.updateOne({ _id: matchId }, { status: "completed" });
   console.log(`[MATCH_COMPLETED] matchId=${matchId} \u2014 both proofs submitted and approved.`);
@@ -45196,6 +45293,13 @@ Cleared proof states: ${clearedProof}`
     console.log(`[PROOF_SUBMITTED] telegramId=${telegramId} submitted proof for matchId=${matchId} proofCutByUsername=${proofCutByUsername ?? "null"}.`);
     await User.updateOne({ telegramId }, { state: "awaiting_partner_approval", proofCutByUsername: null });
     await ctx.reply("\u2705 Proof received successfully!\n\nYour cut buddy is checking it now \u{1F440}\u2728");
+    stopInactivityReminders(matchId, telegramId);
+    const isUser1ForApproval = isUser1;
+    void startInactivityReminders(bot, matchId, partnerId, "awaiting_partner_approval", async (mid) => {
+      const m = await Match.findOne({ _id: mid, status: "active" });
+      if (!m) return false;
+      return isUser1ForApproval ? !m.user1ProofApprovedByPartner : !m.user2ProofApprovedByPartner;
+    });
     const approveButtons = import_telegraf.Markup.inlineKeyboard([
       import_telegraf.Markup.button.callback("\u2705 Approve Proof", `approve_proof:${matchId}:${telegramId}`),
       import_telegraf.Markup.button.callback("\u274C Reject Proof", `reject_proof:${matchId}:${telegramId}`)
@@ -45220,23 +45324,6 @@ Take a quick look below and make sure everything's valid \u{1F440}\u2728`,
     }, NO_RESPONSE_TIMEOUT_MS);
     proofTimers.set(proofTimerKey, proofTimer);
     console.log(`[NO_RESPONSE_TIMEOUT_STARTED] matchId=${matchId} proofOwnerId=${telegramId} inactivePartnerId=${partnerId} \u2014 10-min timer started.`);
-    const reminderKey = `proof_reminder:${matchId}:${telegramId}`;
-    if (proofReminderTimers.has(reminderKey)) clearTimeout(proofReminderTimers.get(reminderKey));
-    const reminderTimer = setTimeout(async () => {
-      proofReminderTimers.delete(reminderKey);
-      try {
-        const stillActive = await Match.findOne({ _id: matchId, status: "active" });
-        if (!stillActive) return;
-        await bot.telegram.sendMessage(
-          partnerId,
-          "\u23F0 Your cut buddy is waiting for your response \u{1F440}\u2728\n\nPlease approve or reject the proof before the timer ends \u{1F91D}"
-        );
-        console.log(`[PROOF_REMINDER_SENT] matchId=${matchId} inactivePartnerId=${partnerId}`);
-      } catch (err) {
-        console.error(`[PROOF_REMINDER_FAILED] matchId=${matchId} partnerId=${partnerId}: ${err.message}`);
-      }
-    }, NO_RESPONSE_REMINDER_MS);
-    proofReminderTimers.set(reminderKey, reminderTimer);
   });
   bot.on((0, import_filters.message)("text"), async (ctx) => {
     const telegramId = ctx.from.id;
@@ -45532,6 +45619,11 @@ ${refLink}`,
       await User.updateOne({ telegramId }, { state: "awaiting_proof", proofCutByUsername: normalizedUsername });
       console.log(`[PROOF_ACCOUNT_CUSTOM_ENTERED] telegramId=${telegramId} \u2014 entered username: "${normalizedUsername}"`);
       console.log(`[PROOF_ACCOUNT_SAVED] telegramId=${telegramId} proofCutByUsername=@${normalizedUsername}`);
+      if (user.activeMatchId) {
+        const mid = user.activeMatchId.toString();
+        stopInactivityReminders(mid, telegramId);
+        void startInactivityReminders(bot, mid, telegramId, "awaiting_proof");
+      }
       await ctx.reply("\u{1F4F8} Okieee now send a screenshot as proof that you've completed your partner's cut \u2728");
       return;
     }
@@ -45586,6 +45678,11 @@ Example:
       return;
     }
     console.log(`[PROOF_ACCOUNT_SELECTION_STARTED] telegramId=${telegramId}`);
+    const matchIdForReminder = updated.activeMatchId?.toString();
+    if (matchIdForReminder) {
+      stopInactivityReminders(matchIdForReminder, telegramId);
+      void startInactivityReminders(bot, matchIdForReminder, telegramId, "awaiting_proof_account_selection");
+    }
     const user = await User.findOne({ telegramId });
     const registeredUsername = user?.tiktokUsername ?? "unknown";
     await ctx.reply(
@@ -45618,6 +45715,11 @@ Example:
     await User.updateOne({ telegramId }, { state: "awaiting_proof", proofCutByUsername: registeredUsername });
     console.log(`[PROOF_ACCOUNT_REGISTERED_SELECTED] telegramId=${telegramId} \u2014 using registered @${registeredUsername}`);
     console.log(`[PROOF_ACCOUNT_SAVED] telegramId=${telegramId} proofCutByUsername=@${registeredUsername}`);
+    if (user.activeMatchId) {
+      const mid = user.activeMatchId.toString();
+      stopInactivityReminders(mid, telegramId);
+      void startInactivityReminders(bot, mid, telegramId, "awaiting_proof");
+    }
     await ctx.reply("\u{1F4F8} Okieee now send a screenshot as proof that you've completed your partner's cut \u2728");
   });
   bot.action("proof_enter_other", async (ctx) => {
@@ -45633,6 +45735,11 @@ Example:
       return;
     }
     await User.updateOne({ telegramId }, { state: "awaiting_proof_cut_username" });
+    if (user.activeMatchId) {
+      const mid = user.activeMatchId.toString();
+      stopInactivityReminders(mid, telegramId);
+      void startInactivityReminders(bot, mid, telegramId, "awaiting_proof_cut_username");
+    }
     await ctx.reply("\u270D\uFE0F Please type the TikTok username you used to cut your partner's link \u{1F447}\n\nExample:\n@username");
   });
   bot.action("proof_cancel_account_selection", async (ctx) => {
@@ -45648,6 +45755,11 @@ Example:
       return;
     }
     await User.updateOne({ telegramId }, { state: "in_match" });
+    if (user.activeMatchId) {
+      const mid = user.activeMatchId.toString();
+      stopInactivityReminders(mid, telegramId);
+      void startInactivityReminders(bot, mid, telegramId, "in_match");
+    }
     await ctx.reply("\u274C Cancelled. You can press \u2705 Done Cut again when you're ready.");
   });
   bot.action("cancel_match", async (ctx) => {
@@ -45682,6 +45794,8 @@ Example:
       clearTimeout(existingTimer);
       matchTimers.delete(timerId);
     }
+    stopInactivityReminders(timerId, telegramId);
+    stopInactivityReminders(timerId, partnerId);
     const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);
     await User.updateOne(
       { telegramId },
@@ -45756,6 +45870,7 @@ Example:
     }
     await User.updateOne({ telegramId: proofOwnerId }, { $inc: { totalApprovedCount: 1 } });
     console.log(`[PROOF_APPROVED] telegramId=${telegramId} approved proof of telegramId=${proofOwnerId} for matchId=${matchId}.`);
+    stopInactivityReminders(matchId, telegramId);
     await bot.telegram.sendMessage(proofOwnerId, "\u{1F389} Your cut buddy approved your proof!\n\nSwap completed successfully \u{1F91D}\u2728");
     await checkAndCompleteMatch(bot, matchId);
   });
@@ -45787,6 +45902,7 @@ Example:
     }
     pendingRejectReasons.set(telegramId, { matchId, proofOwnerId });
     await User.updateOne({ telegramId }, { state: "awaiting_reject_reason" });
+    stopInactivityReminders(matchId, telegramId);
     console.log(`[REJECT_REASON_REQUESTED] telegramId=${telegramId} matchId=${matchId} proofOwnerId=${proofOwnerId}`);
     await ctx.reply(
       "Why are you rejecting this proof? \u{1F440}\n\nPlease type a short reason below \u270D\uFE0F\n\nExamples:\n\u2022 Wrong screenshot\n\u2022 Didn't cut yet\n\u2022 Fake proof\n\u2022 Username not matching\n\u2022 Screenshot unclear"
@@ -45821,6 +45937,8 @@ Example:
       clearTimeout(existingReminder);
       proofReminderTimers.delete(rKey);
     }
+    stopInactivityReminders(timerId, proofOwnerId);
+    stopInactivityReminders(timerId, telegramId);
     const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);
     await User.updateOne(
       { telegramId: proofOwnerId },
