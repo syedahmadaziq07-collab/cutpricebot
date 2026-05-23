@@ -43566,15 +43566,17 @@ TikTok username:
   lastBroadcastStats.submitTime = submitTime;
   lastBroadcastStats.ts = Date.now();
 }
+var BANNED_MESSAGE = "\u{1F6AB} Your account has been permanently banned from CutPriceBot.\n\nReason:\nRepeated rule violations or suspicious swap activity.\n\nTo appeal/unban, please contact the owner.";
+var COOLDOWN_MESSAGE = "\u{1F6AB} You're currently on cooldown.\n\nReason:\nYou ignored or failed to complete a previous swap properly.\n\n\u23F3 Please wait until your cooldown ends before using CutPriceBot again.\n\n\u26A0\uFE0F Important:\n\u2022 1st serious offence \u2192 24h cooldown\n\u2022 2nd serious offence \u2192 another 24h cooldown\n\u2022 3rd serious offence \u2192 permanent ban\n\nPlease complete every swap honestly.\nFake proof, ghosting, ignoring proof, or abandoning swaps can lead to restrictions.";
 async function checkSuspension(telegramId) {
   const user = await User.findOne({ telegramId });
-  if (!user) return { suspended: false, message: "" };
-  if (user.isBanned) return { suspended: true, message: "\u{1F6AB} Kau dah kena permanent ban. Game over bro." };
-  if (user.suspendedUntil && user.suspendedUntil > /* @__PURE__ */ new Date()) {
-    const remaining = Math.ceil((user.suspendedUntil.getTime() - Date.now()) / (1e3 * 60 * 60));
-    return { suspended: true, message: `\u23F3 Kau still kena suspend. Tunggu lagi ${remaining} jam k.` };
+  if (!user) return { suspended: false, message: "", reason: null };
+  if (user.isBanned) return { suspended: true, message: BANNED_MESSAGE, reason: "banned" };
+  const now = /* @__PURE__ */ new Date();
+  if (user.suspendedUntil && user.suspendedUntil > now || user.cancelCooldownUntil && user.cancelCooldownUntil > now) {
+    return { suspended: true, message: COOLDOWN_MESSAGE, reason: "cooldown" };
   }
-  return { suspended: false, message: "" };
+  return { suspended: false, message: "", reason: null };
 }
 async function issueNoResponseStrike(bot, inactivePartnerId) {
   const user = await User.findOne({ telegramId: inactivePartnerId });
@@ -44215,6 +44217,11 @@ Example:
     if (existingUser && existingUser.tiktokUsername && existingUser.tiktokUsername !== "__pending__") {
       const sus = await checkSuspension(telegramId);
       if (sus.suspended) {
+        if (sus.reason === "banned") {
+          console.log(`[BANNED_USER_BLOCKED_ACTION] telegramId=${telegramId} action=start`);
+        } else {
+          console.log(`[COOLDOWN_USER_BLOCKED_ACTION] telegramId=${telegramId} action=start`);
+        }
         await ctx.reply(sus.message);
         return;
       }
@@ -45230,6 +45237,11 @@ Cleared proof states: ${clearedProof}`
     console.log(`[MSG] photo from telegramId=${telegramId}`);
     const sus = await checkSuspension(telegramId);
     if (sus.suspended) {
+      if (sus.reason === "banned") {
+        console.log(`[BANNED_USER_BLOCKED_ACTION] telegramId=${telegramId} action=photo`);
+      } else {
+        console.log(`[COOLDOWN_USER_BLOCKED_ACTION] telegramId=${telegramId} action=photo`);
+      }
       await ctx.reply(sus.message);
       return;
     }
@@ -45356,6 +45368,11 @@ Take a quick look below and make sure everything's valid \u{1F440}\u2728`,
     if (text.startsWith("/")) return;
     const sus = await checkSuspension(telegramId);
     if (sus.suspended) {
+      if (sus.reason === "banned") {
+        console.log(`[BANNED_USER_BLOCKED_ACTION] telegramId=${telegramId} action=text`);
+      } else {
+        console.log(`[COOLDOWN_USER_BLOCKED_ACTION] telegramId=${telegramId} action=text`);
+      }
       await ctx.reply(sus.message);
       return;
     }
@@ -45500,16 +45517,6 @@ Now send your TikTok cut price link to start swapping \u{1F517}\u2728`);
       return;
     }
     if (user.state === "awaiting_cut_link") {
-      if (user.cancelCooldownUntil && user.cancelCooldownUntil > /* @__PURE__ */ new Date()) {
-        const remaining = Math.ceil((user.cancelCooldownUntil.getTime() - Date.now()) / (1e3 * 60 * 60));
-        await ctx.reply(
-          `\u274C Akaun anda masih dalam cooldown selama *${remaining} jam* lagi.
-
-Anda boleh menggunakan sistem semula selepas tempoh ini tamat.`,
-          { parse_mode: "Markdown" }
-        );
-        return;
-      }
       if (user.cutBalance <= 0) {
         const me = await bot.telegram.getMe();
         const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
@@ -46087,6 +46094,11 @@ Proof was rejected by partner. User has been restricted for 24 hours \u{1F6AB}`;
     const telegramId = ctx.from.id;
     const sus = await checkSuspension(telegramId);
     if (sus.suspended) {
+      if (sus.reason === "banned") {
+        console.log(`[BANNED_USER_BLOCKED_ACTION] telegramId=${telegramId} action=cut_more`);
+      } else {
+        console.log(`[COOLDOWN_USER_BLOCKED_ACTION] telegramId=${telegramId} action=cut_more`);
+      }
       await ctx.reply(sus.message);
       return;
     }

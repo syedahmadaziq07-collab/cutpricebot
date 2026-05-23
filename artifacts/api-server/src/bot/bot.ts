@@ -647,15 +647,31 @@ async function broadcastCutLinkNotification(
 // Keep old name as alias so no other call site breaks
 const notifyQueueUsers = broadcastCutLinkNotification;
 
-async function checkSuspension(telegramId: number): Promise<{ suspended: boolean; message: string }> {
+const BANNED_MESSAGE =
+  "🚫 Your account has been permanently banned from CutPriceBot.\n\n" +
+  "Reason:\nRepeated rule violations or suspicious swap activity.\n\n" +
+  "To appeal/unban, please contact the owner.";
+
+const COOLDOWN_MESSAGE =
+  "🚫 You're currently on cooldown.\n\n" +
+  "Reason:\nYou ignored or failed to complete a previous swap properly.\n\n" +
+  "⏳ Please wait until your cooldown ends before using CutPriceBot again.\n\n" +
+  "⚠️ Important:\n" +
+  "• 1st serious offence → 24h cooldown\n" +
+  "• 2nd serious offence → another 24h cooldown\n" +
+  "• 3rd serious offence → permanent ban\n\n" +
+  "Please complete every swap honestly.\n" +
+  "Fake proof, ghosting, ignoring proof, or abandoning swaps can lead to restrictions.";
+
+async function checkSuspension(telegramId: number): Promise<{ suspended: boolean; message: string; reason: "banned" | "cooldown" | null }> {
   const user = await User.findOne({ telegramId });
-  if (!user) return { suspended: false, message: "" };
-  if (user.isBanned) return { suspended: true, message: "🚫 Kau dah kena permanent ban. Game over bro." };
-  if (user.suspendedUntil && user.suspendedUntil > new Date()) {
-    const remaining = Math.ceil((user.suspendedUntil.getTime() - Date.now()) / (1000 * 60 * 60));
-    return { suspended: true, message: `⏳ Kau still kena suspend. Tunggu lagi ${remaining} jam k.` };
+  if (!user) return { suspended: false, message: "", reason: null };
+  if (user.isBanned) return { suspended: true, message: BANNED_MESSAGE, reason: "banned" };
+  const now = new Date();
+  if ((user.suspendedUntil && user.suspendedUntil > now) || (user.cancelCooldownUntil && user.cancelCooldownUntil > now)) {
+    return { suspended: true, message: COOLDOWN_MESSAGE, reason: "cooldown" };
   }
-  return { suspended: false, message: "" };
+  return { suspended: false, message: "", reason: null };
 }
 
 async function issueStrike(bot: Telegraf, telegramId: number): Promise<void> {
@@ -1355,7 +1371,11 @@ export function createBot(): Telegraf {
 
     if (existingUser && existingUser.tiktokUsername && existingUser.tiktokUsername !== "__pending__") {
       const sus = await checkSuspension(telegramId);
-      if (sus.suspended) { await ctx.reply(sus.message); return; }
+      if (sus.suspended) {
+        if (sus.reason === "banned") { console.log(`[BANNED_USER_BLOCKED_ACTION] telegramId=${telegramId} action=start`); }
+        else { console.log(`[COOLDOWN_USER_BLOCKED_ACTION] telegramId=${telegramId} action=start`); }
+        await ctx.reply(sus.message); return;
+      }
 
       const firstName = ctx.from.first_name ?? "there";
       const tgUsername = existingUser.telegramUsername || ctx.from.username || "unknown";
@@ -2346,7 +2366,11 @@ export function createBot(): Telegraf {
     console.log(`[MSG] photo from telegramId=${telegramId}`);
 
     const sus = await checkSuspension(telegramId);
-    if (sus.suspended) { await ctx.reply(sus.message); return; }
+    if (sus.suspended) {
+      if (sus.reason === "banned") { console.log(`[BANNED_USER_BLOCKED_ACTION] telegramId=${telegramId} action=photo`); }
+      else { console.log(`[COOLDOWN_USER_BLOCKED_ACTION] telegramId=${telegramId} action=photo`); }
+      await ctx.reply(sus.message); return;
+    }
 
     await checkAndApplyDailyReset(bot, telegramId);
 
@@ -2493,7 +2517,11 @@ export function createBot(): Telegraf {
     if (text.startsWith("/")) return;
 
     const sus = await checkSuspension(telegramId);
-    if (sus.suspended) { await ctx.reply(sus.message); return; }
+    if (sus.suspended) {
+      if (sus.reason === "banned") { console.log(`[BANNED_USER_BLOCKED_ACTION] telegramId=${telegramId} action=text`); }
+      else { console.log(`[COOLDOWN_USER_BLOCKED_ACTION] telegramId=${telegramId} action=text`); }
+      await ctx.reply(sus.message); return;
+    }
 
     await checkAndApplyDailyReset(bot, telegramId);
 
@@ -2628,14 +2656,6 @@ export function createBot(): Telegraf {
     }
 
     if (user.state === "awaiting_cut_link") {
-      if (user.cancelCooldownUntil && user.cancelCooldownUntil > new Date()) {
-        const remaining = Math.ceil((user.cancelCooldownUntil.getTime() - Date.now()) / (1000 * 60 * 60));
-        await ctx.reply(
-          `❌ Akaun anda masih dalam cooldown selama *${remaining} jam* lagi.\n\nAnda boleh menggunakan sistem semula selepas tempoh ini tamat.`,
-          { parse_mode: "Markdown" },
-        );
-        return;
-      }
 
       if (user.cutBalance <= 0) {
         const me = await bot.telegram.getMe();
@@ -3267,7 +3287,11 @@ export function createBot(): Telegraf {
     const telegramId = ctx.from!.id;
 
     const sus = await checkSuspension(telegramId);
-    if (sus.suspended) { await ctx.reply(sus.message); return; }
+    if (sus.suspended) {
+      if (sus.reason === "banned") { console.log(`[BANNED_USER_BLOCKED_ACTION] telegramId=${telegramId} action=cut_more`); }
+      else { console.log(`[COOLDOWN_USER_BLOCKED_ACTION] telegramId=${telegramId} action=cut_more`); }
+      await ctx.reply(sus.message); return;
+    }
 
     const user = await User.findOne({ telegramId });
     if (!user) return;
