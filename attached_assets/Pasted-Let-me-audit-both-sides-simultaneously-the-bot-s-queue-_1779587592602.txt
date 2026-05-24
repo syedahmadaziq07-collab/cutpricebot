@@ -1,0 +1,44 @@
+Let me audit both sides simultaneously — the bot's queue storage and the admin dashboard endpoint:
+Let me read the app.ts and find the admin dashboard code simultaneously:
+The routes/index.ts only has a health route — there's no /api/admin/queue endpoint at all. Let me find the admin dashboard to understand what it expects:
+Let me find the admin dashboard frontend and all queue-related code:
+Let me find the admin dashboard frontend code:
+Let me look at the full project structure to find the admin dashboard:
+Let me search the bot.ts for where the admin dashboard is served (it might be inline HTML served by the bot itself):
+Let me search broadly for the admin dashboard — it might be outside the artifacts folder or served inline:
+Let me search more broadly for the admin dashboard — it may be a separate web frontend or served inline from the bot:
+Let me check the lib and scripts directories for the admin dashboard:
+Let me look at the lib package and db to understand the full project structure:
+Let me explore the lib directory to understand the API spec and db schema:
+Let me read the User model and also check the lib/db schema to understand the complete data structure:
+Now I have the complete picture. Here's the root cause:
+
+Queue model only stores { telegramId, pendingLink, createdAt } — no username/status fields
+GET /api/admin/queue doesn't exist — routes/index.ts only has a health route
+The Express server and bot run in the same process so we can share mongoose models in routes
+I'll fix all of this now:
+Let me continue implementing all the remaining pieces in parallel:
+Now I'll update addToQueue, requeueUser, create the admin route, and update the router — all in parallel:
+Now let me update requeueUser and create a removeFromQueue helper, plus the admin route — all in parallel:
+Now let me create the admin route and update the router, while also looking at where users get removed from queue to add logs there:
+Now let me update the router and add removal logging to key queue deletion points in bot.ts simultaneously:
+Let me check the server logs and continue adding queue removal logging in bot.ts simultaneously:
+The server is running from a stale dist/. I need to install dependencies and rebuild the source first. Let me also finish adding the queue removal logs simultaneously:
+Let me install dependencies and build the project, while simultaneously updating the cleanupStaleQueue function and adding removal logs:
+Good — dependencies installed. Now let me update cleanupStaleQueue to handle legacy entries, build the project, and add removal logging all in parallel:
+Now let me build the project and add removal logging in the key Queue deletion spots simultaneously:
+Build succeeded! Let me add the queue removal helper and restart the workflow simultaneously:
+Let me add removal logs to the key Queue deletion spots, then rebuild and restart:
+Let me add the remaining removal logs, rebuild the project, and restart — all in parallel:
+Now let me rebuild with all the changes and restart the workflow:
+Build succeeded! Let me restart the workflow and push to GitHub simultaneously:
+The bot needs MONGODB_URI set. Let me check the environment and db connection:
+MONGODB_URI isn't set in the environment — that's why the server can't start. I need to set it as a secret. Let me check the proper way to do this:
+The MONGODB_URI and BOT_TOKEN secrets aren't configured in this environment — the server can't start without them. I need to ask you to provide them:
+The bot server needs these two secrets to start:
+• MONGODB_URI — your MongoDB connection string (e.g. mongodb+srv://...)
+• BOT_TOKEN — your Telegram bot token from @BotFather
+Secrets
+Key
+Value
+
