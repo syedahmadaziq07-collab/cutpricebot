@@ -42902,6 +42902,7 @@ var userSchema = new mongoose2.Schema(
     referredBy: { type: String, default: null },
     cutBalance: { type: Number, default: 7 },
     strikes: { type: Number, default: 0 },
+    lastStrikeAt: { type: Date, default: null },
     suspendedUntil: { type: Date, default: null },
     isBanned: { type: Boolean, default: false },
     lastMatchPartnerId: { type: Number, default: null },

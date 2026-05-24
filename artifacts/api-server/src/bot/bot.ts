@@ -802,17 +802,33 @@ async function checkSuspension(telegramId: number): Promise<{ suspended: boolean
 async function issueStrike(bot: Telegraf, telegramId: number): Promise<void> {
   const user = await User.findOne({ telegramId });
   if (!user) return;
-  const newStrikes = user.strikes + 1;
+
+  const now = new Date();
+  const MS_24H = 24 * 60 * 60 * 1000;
+
+  // Reset strikes if last offence was more than 24h ago (cooldown has expired cleanly)
+  const lastStrikeAt = user.lastStrikeAt;
+  const reoffendingWithin24h = lastStrikeAt && (now.getTime() - lastStrikeAt.getTime()) < MS_24H;
+  const baseStrikes = reoffendingWithin24h ? user.strikes : 0;
+
+  if (reoffendingWithin24h) {
+    console.log(`[STRIKE_REOFFEND] telegramId=${telegramId} — reoffended within 24h, carrying over ${user.strikes} strike(s).`);
+  } else if (lastStrikeAt) {
+    console.log(`[STRIKE_RESET] telegramId=${telegramId} — last strike was >24h ago, resetting strike count to 0 before applying new strike.`);
+  }
+
+  const newStrikes = baseStrikes + 1;
+
   if (newStrikes >= 3) {
-    await User.updateOne({ telegramId }, { strikes: newStrikes, isBanned: true, state: "idle", pendingLink: null });
+    await User.updateOne({ telegramId }, { strikes: newStrikes, lastStrikeAt: now, isBanned: true, state: "idle", pendingLink: null });
     await bot.telegram.sendMessage(
       telegramId,
       "🚫 Strike 3! Kau dah kena *permanent ban*.\nPunca: screenshot tak valid / proof tak cukup.\n\nTa-ta! 👋",
       { parse_mode: "Markdown" },
     );
   } else {
-    const suspendedUntil = new Date(Date.now() + COOLDOWN_MS);
-    await User.updateOne({ telegramId }, { strikes: newStrikes, suspendedUntil, state: "idle", pendingLink: null });
+    const suspendedUntil = new Date(now.getTime() + COOLDOWN_MS);
+    await User.updateOne({ telegramId }, { strikes: newStrikes, lastStrikeAt: now, suspendedUntil, state: "idle", pendingLink: null });
     const msgs = [
       `⚠️ Strike ${newStrikes}/3!\nScreenshot tak valid. Kau kena *suspend 24 jam*.\n\nJangan repeat k! 😤`,
       `⚠️ Strike ${newStrikes}/3!\nProof tak lepas semak. 24 jam suspend dimulakan.\n\nLast warning ni! 😡`,
