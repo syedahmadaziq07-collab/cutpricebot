@@ -581,19 +581,21 @@ async function retryQueueMatchingInternal(bot: Telegraf): Promise<QueueRetryResu
 }
 
 export function scheduleQueueRetry(bot: Telegraf): void {
-  // Runs every 5 minutes — re-triggers matching for already-queued users when no new claimant arrives
-  schedule("*/5 * * * *", async () => {
+  // Runs every 30 seconds as a safety net — catches users who missed an immediate match
+  // (e.g. both users entered queue simultaneously before either had a partner).
+  // The primary matching path is immediate: tryMatchAtomic inside addToQueue.
+  schedule("*/30 * * * * *", async () => {
     try {
       const queueSize = await User.countDocuments({ state: "inqueue", isWaiting: true });
       if (queueSize >= 2) {
-        console.log(`[QUEUE_RETRY_CRON] ${queueSize} user(s) in queue — triggering retry matching.`);
+        console.log(`[QUEUE_RETRY_CRON] ${queueSize} user(s) in queue — triggering safety-net retry matching.`);
         await retryQueueMatchingInternal(bot);
       }
     } catch (err) {
       console.error(`[QUEUE_RETRY_CRON_FAILED] ${(err as Error).message}`);
     }
   });
-  console.log("[QUEUE_RETRY_CRON] Scheduler registered: queue retry matching every 5 minutes.");
+  console.log("[QUEUE_RETRY_CRON] Scheduler registered: safety-net queue retry every 30 seconds.");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1094,9 +1096,7 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
   const matchObjectId = new mongoose.Types.ObjectId();
   const matchId = matchObjectId.toString();
 
-  console.log(`[ATOMIC_PARTNER_CLAIM_ATTEMPT] telegramId=${currentTelegramId} seeking partner. Excluding ${excludeIds.length - 1} recently paired user(s).`);
-  console.log(`[FIFO_MATCH_SEARCH] telegramId=${currentTelegramId} — scanning queue ordered by queuedAt ASC (oldest-first FIFO).`);
-  console.log(`[FIFO_QUEUE_ORDER_USED] sort=queuedAt:1 — oldest waiting user will be claimed first.`);
+  console.log(`[ATOMIC_PARTNER_CLAIM_ATTEMPT] telegramId=${currentTelegramId} seeking partner. Excluding ${excludeIds.length - 1} recently paired user(s): [${excludeIds.slice(1).join(", ")}]`);
 
   // Validate current user has no stale state before claiming a partner
   const currentUserDoc = await User.findOne({ telegramId: currentTelegramId }).select("state isWaiting activeMatchId pendingLink");
@@ -1106,6 +1106,29 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
     await Queue.deleteOne({ telegramId: currentTelegramId });
     console.log(`[STALE_USER_STATE_CLEANED] telegramId=${currentTelegramId}`);
     return false;
+  }
+
+  // Log detailed candidate diagnostics before claiming
+  const totalInQueue = await Queue.countDocuments();
+  const broadCandidates = await User.find({
+    telegramId: { $ne: currentTelegramId },
+    state: "inqueue",
+    isWaiting: true,
+  }).select("telegramId isBanned suspendedUntil activeMatchId pendingLink").lean();
+
+  console.log(`[CANDIDATE_SCAN] telegramId=${currentTelegramId} — ${totalInQueue} total in queue, ${broadCandidates.length} raw candidate(s) (before eligibility filters):`);
+  for (const c of broadCandidates) {
+    const recentlyPaired = excludeIds.includes(c.telegramId);
+    const banned = c.isBanned;
+    const onCooldown = c.suspendedUntil && (c.suspendedUntil as Date) > now;
+    const hasActiveMatch = !!c.activeMatchId;
+    const noLink = !c.pendingLink;
+    if (recentlyPaired) console.log(`  ❌ telegramId=${c.telegramId} — REJECTED: recently paired (24h rule)`);
+    else if (banned)    console.log(`  ❌ telegramId=${c.telegramId} — REJECTED: banned`);
+    else if (onCooldown) console.log(`  ❌ telegramId=${c.telegramId} — REJECTED: on cooldown until ${(c.suspendedUntil as Date).toISOString()}`);
+    else if (hasActiveMatch) console.log(`  ❌ telegramId=${c.telegramId} — REJECTED: has active match ${c.activeMatchId}`);
+    else if (noLink)    console.log(`  ❌ telegramId=${c.telegramId} — REJECTED: no pending link`);
+    else                console.log(`  ✅ telegramId=${c.telegramId} — ELIGIBLE`);
   }
 
   // Atomically claim the oldest eligible waiting user (strict FIFO via queuedAt: 1 sort)
@@ -1132,7 +1155,7 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
   );
 
   if (!partner) {
-    console.log(`[ATOMIC_PARTNER_CLAIM_FAILED] telegramId=${currentTelegramId} — no eligible partner found in queue.`);
+    console.log(`[ATOMIC_PARTNER_CLAIM_FAILED] telegramId=${currentTelegramId} — no eligible partner found in queue after filters.`);
     return false;
   }
 
@@ -1287,8 +1310,10 @@ async function handleReadyTimeout(
   console.log(`[MATCH_FULLY_TERMINATED] matchId=${matchId} — ready timeout, both users handled, no punishment.`);
 }
 
-// Add a user to the Queue collection (called only when tryMatchAtomic found no partner).
-async function addToQueue(_bot: Telegraf, telegramId: number, pendingLink: string): Promise<void> {
+// Add a user to the Queue collection and immediately attempt a match.
+// This is the primary entry point into the queue — always tries matching right away
+// so two users submitting links near-simultaneously find each other within seconds.
+async function addToQueue(bot: Telegraf, telegramId: number, pendingLink: string): Promise<void> {
   const existing = await Queue.findOne({ telegramId });
   if (existing) {
     console.log(`[DUPLICATE_QUEUE_ENTRY_REMOVED] telegramId=${telegramId} — removed stale queue entry (pendingLink="${existing.pendingLink ?? "null"}")`);
@@ -1299,7 +1324,17 @@ async function addToQueue(_bot: Telegraf, telegramId: number, pendingLink: strin
   await User.updateOne({ telegramId }, { state: "inqueue", isWaiting: true, queuedAt, originalQueuedAt: queuedAt, pendingLink, activeMatchId: null });
 
   const queueSize = await Queue.countDocuments();
-  console.log(`[USER_QUEUED_AFTER_NO_PARTNER] telegramId=${telegramId} entered queue. Queue size: ${queueSize}.`);
+  console.log(`[USER_QUEUED] telegramId=${telegramId} entered queue. Queue size: ${queueSize}. Attempting immediate match...`);
+
+  // Immediately attempt to match — catches the case where another user entered the queue
+  // between this user's initial tryMatchAtomic call and now (the race-condition window).
+  const matched = await tryMatchAtomic(bot, telegramId, pendingLink);
+  if (matched) {
+    console.log(`[IMMEDIATE_QUEUE_MATCH] telegramId=${telegramId} — matched immediately after joining queue.`);
+  } else {
+    const remaining = await Queue.countDocuments();
+    console.log(`[QUEUE_WAITING] telegramId=${telegramId} — no partner yet. ${remaining} user(s) in queue. Waiting for next submission or scheduler.`);
+  }
 }
 
 // Requeue an innocent/remaining user after a match failure.

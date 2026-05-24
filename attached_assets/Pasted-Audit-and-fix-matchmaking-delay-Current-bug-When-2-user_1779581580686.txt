@@ -1,0 +1,47 @@
+Audit and fix matchmaking delay.
+
+Current bug:
+When 2 users submit TikTok links at almost the same time, they do not get matched immediately. Sometimes it takes around 2 minutes even though both users are already in queue.
+
+Expected behavior:
+- Whenever a user submits a valid TikTok link and enters queue, the bot must immediately attempt matchmaking.
+- If another eligible user is already in queue, create a pending-ready match immediately within a few seconds.
+- Do not wait for scheduler/polling/cron.
+- Scheduler may remain as backup only, not the main trigger.
+
+Important:
+This must work with the new Ready To Cut flow:
+submit link
+→ queue
+→ immediate partner found
+→ send both users Ready To Cut / Cancel buttons
+→ only reveal links after both ready.
+
+Tasks:
+1. Find all queue insertion logic after user submits a TikTok link.
+2. Ensure tryMatch / matchmaking function is called immediately after saving the user link and queue state.
+3. Ensure tryMatch also runs for both directions:
+   - current user can find existing queued partner
+   - existing queued partner can be matched when new user joins
+4. Remove or reduce any artificial delay, setTimeout, cooldown polling, or scheduled-only matching behavior.
+5. Audit eligibility filters:
+   - must exclude self
+   - must exclude blocked/banned users
+   - must exclude cooldown users
+   - must exclude active/pending-ready users
+   - must respect 24h anti-repeat
+   - must not accidentally exclude all valid users.
+6. Add detailed logs:
+   - user entered queue
+   - number of eligible candidates found
+   - reason candidate rejected
+   - pending-ready match created
+   - ready prompt sent to both users
+7. If no candidate found, keep user in queue.
+8. If candidate found, remove both users from open queue and create pending-ready match.
+9. Make sure the old direct link reveal flow is disabled.
+10. Test with 2 users submitting links at the same time.
+11. Expected test result:
+   - both receive Ready To Cut / Cancel within 1-5 seconds.
+   - no TikTok links are revealed yet.
+12. Commit and push to GitHub main.

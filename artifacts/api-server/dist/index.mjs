@@ -43519,18 +43519,18 @@ async function retryQueueMatchingInternal(bot) {
   return { matched, reasons };
 }
 function scheduleQueueRetry(bot) {
-  (0, import_node_cron.schedule)("*/5 * * * *", async () => {
+  (0, import_node_cron.schedule)("*/30 * * * * *", async () => {
     try {
       const queueSize = await User.countDocuments({ state: "inqueue", isWaiting: true });
       if (queueSize >= 2) {
-        console.log(`[QUEUE_RETRY_CRON] ${queueSize} user(s) in queue \u2014 triggering retry matching.`);
+        console.log(`[QUEUE_RETRY_CRON] ${queueSize} user(s) in queue \u2014 triggering safety-net retry matching.`);
         await retryQueueMatchingInternal(bot);
       }
     } catch (err) {
       console.error(`[QUEUE_RETRY_CRON_FAILED] ${err.message}`);
     }
   });
-  console.log("[QUEUE_RETRY_CRON] Scheduler registered: queue retry matching every 5 minutes.");
+  console.log("[QUEUE_RETRY_CRON] Scheduler registered: safety-net queue retry every 30 seconds.");
 }
 var lastBroadcastStats = {
   total: 0,
@@ -43964,9 +43964,7 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
   }
   const matchObjectId = new mongoose7.Types.ObjectId();
   const matchId = matchObjectId.toString();
-  console.log(`[ATOMIC_PARTNER_CLAIM_ATTEMPT] telegramId=${currentTelegramId} seeking partner. Excluding ${excludeIds.length - 1} recently paired user(s).`);
-  console.log(`[FIFO_MATCH_SEARCH] telegramId=${currentTelegramId} \u2014 scanning queue ordered by queuedAt ASC (oldest-first FIFO).`);
-  console.log(`[FIFO_QUEUE_ORDER_USED] sort=queuedAt:1 \u2014 oldest waiting user will be claimed first.`);
+  console.log(`[ATOMIC_PARTNER_CLAIM_ATTEMPT] telegramId=${currentTelegramId} seeking partner. Excluding ${excludeIds.length - 1} recently paired user(s): [${excludeIds.slice(1).join(", ")}]`);
   const currentUserDoc = await User.findOne({ telegramId: currentTelegramId }).select("state isWaiting activeMatchId pendingLink");
   if (currentUserDoc && currentUserDoc.activeMatchId && currentUserDoc.activeMatchId !== null) {
     console.log(`[STALE_USER_STATE_DETECTED] telegramId=${currentTelegramId} has stale activeMatchId=${currentUserDoc.activeMatchId} \u2014 cleaning`);
@@ -43974,6 +43972,26 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
     await Queue.deleteOne({ telegramId: currentTelegramId });
     console.log(`[STALE_USER_STATE_CLEANED] telegramId=${currentTelegramId}`);
     return false;
+  }
+  const totalInQueue = await Queue.countDocuments();
+  const broadCandidates = await User.find({
+    telegramId: { $ne: currentTelegramId },
+    state: "inqueue",
+    isWaiting: true
+  }).select("telegramId isBanned suspendedUntil activeMatchId pendingLink").lean();
+  console.log(`[CANDIDATE_SCAN] telegramId=${currentTelegramId} \u2014 ${totalInQueue} total in queue, ${broadCandidates.length} raw candidate(s) (before eligibility filters):`);
+  for (const c of broadCandidates) {
+    const recentlyPaired = excludeIds.includes(c.telegramId);
+    const banned = c.isBanned;
+    const onCooldown = c.suspendedUntil && c.suspendedUntil > now;
+    const hasActiveMatch = !!c.activeMatchId;
+    const noLink = !c.pendingLink;
+    if (recentlyPaired) console.log(`  \u274C telegramId=${c.telegramId} \u2014 REJECTED: recently paired (24h rule)`);
+    else if (banned) console.log(`  \u274C telegramId=${c.telegramId} \u2014 REJECTED: banned`);
+    else if (onCooldown) console.log(`  \u274C telegramId=${c.telegramId} \u2014 REJECTED: on cooldown until ${c.suspendedUntil.toISOString()}`);
+    else if (hasActiveMatch) console.log(`  \u274C telegramId=${c.telegramId} \u2014 REJECTED: has active match ${c.activeMatchId}`);
+    else if (noLink) console.log(`  \u274C telegramId=${c.telegramId} \u2014 REJECTED: no pending link`);
+    else console.log(`  \u2705 telegramId=${c.telegramId} \u2014 ELIGIBLE`);
   }
   const partner = await User.findOneAndUpdate(
     {
@@ -43997,7 +44015,7 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
     { sort: { queuedAt: 1 }, new: true }
   );
   if (!partner) {
-    console.log(`[ATOMIC_PARTNER_CLAIM_FAILED] telegramId=${currentTelegramId} \u2014 no eligible partner found in queue.`);
+    console.log(`[ATOMIC_PARTNER_CLAIM_FAILED] telegramId=${currentTelegramId} \u2014 no eligible partner found in queue after filters.`);
     return false;
   }
   console.log(`[FIFO_MATCH_FOUND] telegramId=${currentTelegramId} found partner telegramId=${partner.telegramId} (@${partner.tiktokUsername}) queuedAt=${partner.queuedAt?.toISOString() ?? "null"}.`);
@@ -44133,7 +44151,7 @@ Submit a new cut link whenever you're ready to match again.`
   }
   console.log(`[MATCH_FULLY_TERMINATED] matchId=${matchId} \u2014 ready timeout, both users handled, no punishment.`);
 }
-async function addToQueue(_bot, telegramId, pendingLink) {
+async function addToQueue(bot, telegramId, pendingLink) {
   const existing = await Queue.findOne({ telegramId });
   if (existing) {
     console.log(`[DUPLICATE_QUEUE_ENTRY_REMOVED] telegramId=${telegramId} \u2014 removed stale queue entry (pendingLink="${existing.pendingLink ?? "null"}")`);
@@ -44143,7 +44161,14 @@ async function addToQueue(_bot, telegramId, pendingLink) {
   await Queue.create({ telegramId, pendingLink, createdAt: queuedAt });
   await User.updateOne({ telegramId }, { state: "inqueue", isWaiting: true, queuedAt, originalQueuedAt: queuedAt, pendingLink, activeMatchId: null });
   const queueSize = await Queue.countDocuments();
-  console.log(`[USER_QUEUED_AFTER_NO_PARTNER] telegramId=${telegramId} entered queue. Queue size: ${queueSize}.`);
+  console.log(`[USER_QUEUED] telegramId=${telegramId} entered queue. Queue size: ${queueSize}. Attempting immediate match...`);
+  const matched = await tryMatchAtomic(bot, telegramId, pendingLink);
+  if (matched) {
+    console.log(`[IMMEDIATE_QUEUE_MATCH] telegramId=${telegramId} \u2014 matched immediately after joining queue.`);
+  } else {
+    const remaining = await Queue.countDocuments();
+    console.log(`[QUEUE_WAITING] telegramId=${telegramId} \u2014 no partner yet. ${remaining} user(s) in queue. Waiting for next submission or scheduler.`);
+  }
 }
 async function requeueUser(bot, telegramId, pendingLink) {
   const user = await User.findOne({ telegramId }).select("originalQueuedAt tiktokUsername");
