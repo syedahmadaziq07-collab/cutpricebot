@@ -1220,12 +1220,12 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
   await Promise.all([
     bot.telegram.sendMessage(
       currentTelegramId,
-      `🎯 Cut buddy found!\n\nPartner is ready to connect.\nBefore we reveal links, both users must confirm.\n\nPress ✅ Ready To Cut if you are active now.`,
+      `🎯 Cut buddy found!\n\nPartner found.\nBefore links are revealed, both users must confirm they are active now.`,
       { ...readyButtons },
     ),
     bot.telegram.sendMessage(
       partner.telegramId,
-      `🎯 Cut buddy found!\n\nPartner is ready to connect.\nBefore we reveal links, both users must confirm.\n\nPress ✅ Ready To Cut if you are active now.`,
+      `🎯 Cut buddy found!\n\nPartner found.\nBefore links are revealed, both users must confirm they are active now.`,
       { ...readyButtons },
     ),
   ]);
@@ -1287,7 +1287,7 @@ async function handleReadyTimeout(
       try {
         await bot.telegram.sendMessage(
           uid,
-          `⏰ Partner did not confirm in time.\n\n❌ Partner cancelled before starting. Searching for a new cut buddy...`,
+          `⏰ Partner did not confirm in time.\n\n❌ Match expired. Searching for a new cut buddy...`,
         );
       } catch { /* user may have blocked bot */ }
       await addToQueue(bot, uid, userLink);
@@ -1301,7 +1301,7 @@ async function handleReadyTimeout(
       try {
         await bot.telegram.sendMessage(
           uid,
-          `⏰ Ready confirmation timed out. No cooldown applied.\n\nSubmit a new cut link whenever you're ready to match again.`,
+          `⏰ Ready confirmation timed out. No cooldown applied.\n\nSubmit a new cut link whenever you are ready to match again.`,
         );
       } catch { /* user may have blocked bot */ }
     }
@@ -3572,7 +3572,7 @@ export function createBot(): Telegraf {
           try {
             await bot.telegram.sendMessage(
               partnerId,
-              `❌ Partner cancelled before starting. Searching for a new cut buddy...`,
+              `❌ Partner cancelled before starting. Searching again...`,
             );
           } catch { /* partner may have blocked bot */ }
 

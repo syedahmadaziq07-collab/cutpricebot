@@ -44069,20 +44069,16 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
       currentTelegramId,
       `\u{1F3AF} Cut buddy found!
 
-Partner is ready to connect.
-Before we reveal links, both users must confirm.
-
-Press \u2705 Ready To Cut if you are active now.`,
+Partner found.
+Before links are revealed, both users must confirm they are active now.`,
       { ...readyButtons }
     ),
     bot.telegram.sendMessage(
       partner.telegramId,
       `\u{1F3AF} Cut buddy found!
 
-Partner is ready to connect.
-Before we reveal links, both users must confirm.
-
-Press \u2705 Ready To Cut if you are active now.`,
+Partner found.
+Before links are revealed, both users must confirm they are active now.`,
       { ...readyButtons }
     )
   ]);
@@ -44127,7 +44123,7 @@ async function handleReadyTimeout(bot, matchId, user1Id, user2Id) {
           uid,
           `\u23F0 Partner did not confirm in time.
 
-\u274C Partner cancelled before starting. Searching for a new cut buddy...`
+\u274C Match expired. Searching for a new cut buddy...`
         );
       } catch {
       }
@@ -44143,7 +44139,7 @@ async function handleReadyTimeout(bot, matchId, user1Id, user2Id) {
           uid,
           `\u23F0 Ready confirmation timed out. No cooldown applied.
 
-Submit a new cut link whenever you're ready to match again.`
+Submit a new cut link whenever you are ready to match again.`
         );
       } catch {
       }
@@ -46340,7 +46336,7 @@ Now complete the cut and press \u2705 Done Cut.`,
           try {
             await bot.telegram.sendMessage(
               partnerId,
-              `\u274C Partner cancelled before starting. Searching for a new cut buddy...`
+              `\u274C Partner cancelled before starting. Searching again...`
             );
           } catch {
           }
