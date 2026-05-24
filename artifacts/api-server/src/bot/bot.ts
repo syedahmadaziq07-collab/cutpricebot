@@ -1,3 +1,4 @@
+// Rebuild: 2026-05-24
 import mongoose from "mongoose";
 import { Telegraf, Markup } from "telegraf";
 import { message } from "telegraf/filters";
