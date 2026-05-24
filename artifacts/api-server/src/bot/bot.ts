@@ -717,55 +717,56 @@ async function broadcastCutLinkNotification(
   let skippedBanned = 0;
   let skippedCooldown = 0;
 
-  for (const u of allUsers) {
-    if (u.telegramId === senderTelegramId) {
-      console.log(`[CUSTOMER_BROADCAST_SKIPPED_SELF] telegramId=${u.telegramId} sender=@${senderTikTok}`);
-      skippedSelf++;
-      continue;
-    }
-    if (u.isBanned) {
-      console.log(`[CUSTOMER_BROADCAST_SKIPPED_BANNED] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
-      skippedBanned++;
-      continue;
-    }
-    const onCooldown = (u.suspendedUntil && u.suspendedUntil > now) || (u.cancelCooldownUntil && u.cancelCooldownUntil > now);
-    if (onCooldown) {
-      console.log(`[CUSTOMER_BROADCAST_SKIPPED_COOLDOWN] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
-      skippedCooldown++;
-      continue;
+  setImmediate(async () => {
+    for (const u of allUsers) {
+      if (u.telegramId === senderTelegramId) {
+        console.log(`[CUSTOMER_BROADCAST_SKIPPED_SELF] telegramId=${u.telegramId} sender=@${senderTikTok}`);
+        skippedSelf++;
+        continue;
+      }
+      if (u.isBanned) {
+        console.log(`[CUSTOMER_BROADCAST_SKIPPED_BANNED] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
+        skippedBanned++;
+        continue;
+      }
+      const onCooldown = (u.suspendedUntil && u.suspendedUntil > now) || (u.cancelCooldownUntil && u.cancelCooldownUntil > now);
+      if (onCooldown) {
+        console.log(`[CUSTOMER_BROADCAST_SKIPPED_COOLDOWN] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
+        skippedCooldown++;
+        continue;
+      }
+
+      try {
+        await bot.telegram.sendMessage(
+          u.telegramId,
+          `🔔 Someone new just dropped their cut link! 👀✨\n\nTikTok username:\n@${senderTikTok}`,
+        );
+        sentCount++;
+        console.log(`[CUSTOMER_BROADCAST_SENT] telegramId=${u.telegramId} (@${u.tiktokUsername}) sender=@${senderTikTok}`);
+      } catch (err) {
+        failedCount++;
+        console.error(`[CUSTOMER_BROADCAST_FAILED] telegramId=${u.telegramId} (@${u.tiktokUsername}): ${(err as Error).message}`);
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
-    try {
-      await bot.telegram.sendMessage(
-        u.telegramId,
-        `🔔 Someone new just dropped their cut link! 👀✨\n\nTikTok username:\n@${senderTikTok}`,
-      );
-      sentCount++;
-      console.log(`[CUSTOMER_BROADCAST_SENT] telegramId=${u.telegramId} (@${u.tiktokUsername}) sender=@${senderTikTok}`);
-    } catch (err) {
-      failedCount++;
-      console.error(`[CUSTOMER_BROADCAST_FAILED] telegramId=${u.telegramId} (@${u.tiktokUsername}): ${(err as Error).message}`);
-    }
-    // FIX 3: 50ms delay between sends to respect Telegram rate limits (30 msg/s per bot)
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
+    const eligible = allUsers.length - skippedSelf - skippedBanned - skippedCooldown;
+    console.log(`[CUSTOMER_BROADCAST_COMPLETED] sender=@${senderTikTok} triggerSource=${triggerSource} total=${allUsers.length} eligible=${eligible} sent=${sentCount} failed=${failedCount} skipped_self=${skippedSelf} skipped_banned=${skippedBanned} skipped_cooldown=${skippedCooldown}`);
 
-  const eligible = allUsers.length - skippedSelf - skippedBanned - skippedCooldown;
-  console.log(`[CUSTOMER_BROADCAST_COMPLETED] sender=@${senderTikTok} triggerSource=${triggerSource} total=${allUsers.length} eligible=${eligible} sent=${sentCount} failed=${failedCount} skipped_self=${skippedSelf} skipped_banned=${skippedBanned} skipped_cooldown=${skippedCooldown}`);
-
-  // Update debug stats
-  lastBroadcastStats.total = allUsers.length;
-  lastBroadcastStats.eligible = eligible;
-  lastBroadcastStats.sent = sentCount;
-  lastBroadcastStats.failed = failedCount;
-  lastBroadcastStats.skippedSelf = skippedSelf;
-  lastBroadcastStats.skippedBanned = skippedBanned;
-  lastBroadcastStats.skippedCooldown = skippedCooldown;
-  lastBroadcastStats.senderTikTok = senderTikTok;
-  lastBroadcastStats.cutLink = cutLink;
-  lastBroadcastStats.triggerSource = triggerSource;
-  lastBroadcastStats.submitTime = submitTime;
-  lastBroadcastStats.ts = Date.now();
+    // Update debug stats
+    lastBroadcastStats.total = allUsers.length;
+    lastBroadcastStats.eligible = eligible;
+    lastBroadcastStats.sent = sentCount;
+    lastBroadcastStats.failed = failedCount;
+    lastBroadcastStats.skippedSelf = skippedSelf;
+    lastBroadcastStats.skippedBanned = skippedBanned;
+    lastBroadcastStats.skippedCooldown = skippedCooldown;
+    lastBroadcastStats.senderTikTok = senderTikTok;
+    lastBroadcastStats.cutLink = cutLink;
+    lastBroadcastStats.triggerSource = triggerSource;
+    lastBroadcastStats.submitTime = submitTime;
+    lastBroadcastStats.ts = Date.now();
+  });
 }
 
 // Keep old name as alias so no other call site breaks
@@ -3783,12 +3784,12 @@ export function createBot(): Telegraf {
 
   // ─── Ready To Cut callback ─────────────────────────────────────────────────
   bot.action(/^ready_to_cut:(.+)$/, async (ctx) => {
-    await ctx.answerCbQuery("⏳ Processing...");
+    await ctx.answerCbQuery();
     const telegramId = ctx.from!.id;
     const matchId = ctx.match[1];
 
     try {
-      await ctx.editMessageText("⏳ Processing your request...");
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
     } catch { /* already edited */ }
 
     const user = await User.findOne({ telegramId });
@@ -3906,12 +3907,12 @@ export function createBot(): Telegraf {
 
   // ─── Cancel Ready callback (before link reveal — no punishment) ─────────────
   bot.action(/^cancel_ready:(.+)$/, async (ctx) => {
-    await ctx.answerCbQuery("⏳ Processing...");
+    await ctx.answerCbQuery();
     const telegramId = ctx.from!.id;
     const matchId = ctx.match[1];
 
     try {
-      await ctx.editMessageText("⏳ Processing your request...");
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
     } catch { /* already edited */ }
 
     const user = await User.findOne({ telegramId });

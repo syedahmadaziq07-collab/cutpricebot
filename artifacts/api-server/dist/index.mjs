@@ -43722,53 +43722,55 @@ async function broadcastCutLinkNotification(bot, senderTikTok, senderTelegramId,
   let skippedSelf = 0;
   let skippedBanned = 0;
   let skippedCooldown = 0;
-  for (const u of allUsers) {
-    if (u.telegramId === senderTelegramId) {
-      console.log(`[CUSTOMER_BROADCAST_SKIPPED_SELF] telegramId=${u.telegramId} sender=@${senderTikTok}`);
-      skippedSelf++;
-      continue;
-    }
-    if (u.isBanned) {
-      console.log(`[CUSTOMER_BROADCAST_SKIPPED_BANNED] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
-      skippedBanned++;
-      continue;
-    }
-    const onCooldown = u.suspendedUntil && u.suspendedUntil > now || u.cancelCooldownUntil && u.cancelCooldownUntil > now;
-    if (onCooldown) {
-      console.log(`[CUSTOMER_BROADCAST_SKIPPED_COOLDOWN] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
-      skippedCooldown++;
-      continue;
-    }
-    try {
-      await bot.telegram.sendMessage(
-        u.telegramId,
-        `\u{1F514} Someone new just dropped their cut link! \u{1F440}\u2728
+  setImmediate(async () => {
+    for (const u of allUsers) {
+      if (u.telegramId === senderTelegramId) {
+        console.log(`[CUSTOMER_BROADCAST_SKIPPED_SELF] telegramId=${u.telegramId} sender=@${senderTikTok}`);
+        skippedSelf++;
+        continue;
+      }
+      if (u.isBanned) {
+        console.log(`[CUSTOMER_BROADCAST_SKIPPED_BANNED] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
+        skippedBanned++;
+        continue;
+      }
+      const onCooldown = u.suspendedUntil && u.suspendedUntil > now || u.cancelCooldownUntil && u.cancelCooldownUntil > now;
+      if (onCooldown) {
+        console.log(`[CUSTOMER_BROADCAST_SKIPPED_COOLDOWN] telegramId=${u.telegramId} (@${u.tiktokUsername})`);
+        skippedCooldown++;
+        continue;
+      }
+      try {
+        await bot.telegram.sendMessage(
+          u.telegramId,
+          `\u{1F514} Someone new just dropped their cut link! \u{1F440}\u2728
 
 TikTok username:
 @${senderTikTok}`
-      );
-      sentCount++;
-      console.log(`[CUSTOMER_BROADCAST_SENT] telegramId=${u.telegramId} (@${u.tiktokUsername}) sender=@${senderTikTok}`);
-    } catch (err) {
-      failedCount++;
-      console.error(`[CUSTOMER_BROADCAST_FAILED] telegramId=${u.telegramId} (@${u.tiktokUsername}): ${err.message}`);
+        );
+        sentCount++;
+        console.log(`[CUSTOMER_BROADCAST_SENT] telegramId=${u.telegramId} (@${u.tiktokUsername}) sender=@${senderTikTok}`);
+      } catch (err) {
+        failedCount++;
+        console.error(`[CUSTOMER_BROADCAST_FAILED] telegramId=${u.telegramId} (@${u.tiktokUsername}): ${err.message}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  const eligible = allUsers.length - skippedSelf - skippedBanned - skippedCooldown;
-  console.log(`[CUSTOMER_BROADCAST_COMPLETED] sender=@${senderTikTok} triggerSource=${triggerSource} total=${allUsers.length} eligible=${eligible} sent=${sentCount} failed=${failedCount} skipped_self=${skippedSelf} skipped_banned=${skippedBanned} skipped_cooldown=${skippedCooldown}`);
-  lastBroadcastStats.total = allUsers.length;
-  lastBroadcastStats.eligible = eligible;
-  lastBroadcastStats.sent = sentCount;
-  lastBroadcastStats.failed = failedCount;
-  lastBroadcastStats.skippedSelf = skippedSelf;
-  lastBroadcastStats.skippedBanned = skippedBanned;
-  lastBroadcastStats.skippedCooldown = skippedCooldown;
-  lastBroadcastStats.senderTikTok = senderTikTok;
-  lastBroadcastStats.cutLink = cutLink;
-  lastBroadcastStats.triggerSource = triggerSource;
-  lastBroadcastStats.submitTime = submitTime;
-  lastBroadcastStats.ts = Date.now();
+    const eligible = allUsers.length - skippedSelf - skippedBanned - skippedCooldown;
+    console.log(`[CUSTOMER_BROADCAST_COMPLETED] sender=@${senderTikTok} triggerSource=${triggerSource} total=${allUsers.length} eligible=${eligible} sent=${sentCount} failed=${failedCount} skipped_self=${skippedSelf} skipped_banned=${skippedBanned} skipped_cooldown=${skippedCooldown}`);
+    lastBroadcastStats.total = allUsers.length;
+    lastBroadcastStats.eligible = eligible;
+    lastBroadcastStats.sent = sentCount;
+    lastBroadcastStats.failed = failedCount;
+    lastBroadcastStats.skippedSelf = skippedSelf;
+    lastBroadcastStats.skippedBanned = skippedBanned;
+    lastBroadcastStats.skippedCooldown = skippedCooldown;
+    lastBroadcastStats.senderTikTok = senderTikTok;
+    lastBroadcastStats.cutLink = cutLink;
+    lastBroadcastStats.triggerSource = triggerSource;
+    lastBroadcastStats.submitTime = submitTime;
+    lastBroadcastStats.ts = Date.now();
+  });
 }
 var BANNED_MESSAGE = "\u{1F6AB} Your account has been permanently banned from CutPriceBot.\n\nReason:\nRepeated rule violations or suspicious swap activity.\n\nTo appeal/unban, please contact the owner.";
 var COOLDOWN_MESSAGE = "\u{1F6AB} You're currently on cooldown.\n\nReason:\nYou ignored or failed to complete a previous swap properly.\n\n\u23F3 Please wait until your cooldown ends before using CutPriceBot again.\n\n\u26A0\uFE0F Important:\n\u2022 1st serious offence \u2192 24h cooldown\n\u2022 2nd serious offence \u2192 another 24h cooldown\n\u2022 3rd serious offence \u2192 permanent ban\n\nPlease complete every swap honestly.\nFake proof, ghosting, ignoring proof, or abandoning swaps can lead to restrictions.";
@@ -46604,11 +46606,11 @@ Example:
     await ctx.reply("\u274C Cancelled. You can press \u2705 Done Cut again when you're ready.");
   });
   bot.action(/^ready_to_cut:(.+)$/, async (ctx) => {
-    await ctx.answerCbQuery("\u23F3 Processing...");
+    await ctx.answerCbQuery();
     const telegramId = ctx.from.id;
     const matchId = ctx.match[1];
     try {
-      await ctx.editMessageText("\u23F3 Processing your request...");
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
     } catch {
     }
     const user = await User.findOne({ telegramId });
@@ -46718,11 +46720,11 @@ Now complete the cut and press \u2705 Done Cut.`,
     void startInactivityReminders(bot, matchId, match.user2Id, "in_match");
   });
   bot.action(/^cancel_ready:(.+)$/, async (ctx) => {
-    await ctx.answerCbQuery("\u23F3 Processing...");
+    await ctx.answerCbQuery();
     const telegramId = ctx.from.id;
     const matchId = ctx.match[1];
     try {
-      await ctx.editMessageText("\u23F3 Processing your request...");
+      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
     } catch {
     }
     const user = await User.findOne({ telegramId });
