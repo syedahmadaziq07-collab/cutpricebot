@@ -572,6 +572,20 @@ async function performStuckCleanup(bot: Telegraf): Promise<{ clearedMatches: num
 
   console.log(`[STUCK_CLEANUP_FINISHED] clearedMatches=${clearedMatches} clearedQueue=${clearedQueue} clearedProof=${clearedProof} totalUsers=${stuckUsers.length}`);
 
+  // Auto-recovery: clear stale activeMatchId for users in awaiting_cut_link with a dead match reference
+  const staleActiveMatchUsers = await User.find({
+    state: "awaiting_cut_link",
+    activeMatchId: { $ne: null },
+  });
+  for (const user of staleActiveMatchUsers) {
+    const { telegramId, activeMatchId } = user;
+    const linkedMatch = await Match.findOne({ _id: activeMatchId, status: { $in: ["active", "pending_ready"] } });
+    if (!linkedMatch) {
+      await User.updateOne({ telegramId }, { activeMatchId: null });
+      console.log(`[STALE_ACTIVE_MATCH_ID_CLEARED] telegramId=${telegramId}`);
+    }
+  }
+
   return { clearedMatches, clearedQueue, clearedProof };
 }
 
@@ -1346,7 +1360,15 @@ async function handleReadyTimeout(
     return;
   }
 
-  await Match.updateOne({ _id: matchId }, { status: "cancelled" });
+  const cancelResult = await Match.findOneAndUpdate(
+    { _id: matchId, status: "pending_ready" },
+    { status: "cancelled" },
+    { new: false },
+  );
+  if (!cancelResult) {
+    console.log(`[READY_TIMEOUT_SKIPPED] matchId=${matchId} — match already activated, skipping cancel.`);
+    return;
+  }
   readyTimers.delete(matchId);
 
   console.log(`[READY_TIMEOUT_CANCELLED] matchId=${matchId} — 60-second window elapsed without both confirming. No punishment.`);
@@ -1748,6 +1770,23 @@ export function createBot(): Telegraf {
         ]),
       );
       console.log(`[PROOF_ACCOUNT_SELECTION_RESENT] telegramId=${telegramId} — resent via /start block`);
+      return;
+    }
+
+    // Guard: active match states — do NOT reset state or clear queue
+    if (existingUser && (existingUser.state === "pending_ready" || existingUser.state === "in_match")) {
+      await ctx.reply("⚠️ You have an active match in progress. Please complete or cancel it first before restarting.\n\nUse the buttons in your previous message.");
+      return;
+    }
+
+    // Guard: proof submission stages — do NOT reset state
+    if (existingUser && (
+      existingUser.state === "awaiting_proof" ||
+      existingUser.state === "awaiting_partner_approval" ||
+      existingUser.state === "awaiting_proof_cut_username" ||
+      existingUser.state === "awaiting_proof_account_selection"
+    )) {
+      await ctx.reply("⚠️ You are currently in the proof submission stage. Please complete it first.");
       return;
     }
 
