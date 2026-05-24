@@ -1,0 +1,57 @@
+Do NOT change any code. Audit only.
+
+I need a full end-to-end audit of this Telegram bot. Check every stage from user registration to match completion.
+
+STAGE 1 — USER REGISTRATION
+- How does /start work?
+- What happens if user already registered vs new user?
+- How is TikTok username validated and saved?
+- Any edge cases that could leave user stuck in awaiting_tiktok_profile?
+
+STAGE 2 — LINK SUBMISSION
+- What happens when user submits a TikTok cut link?
+- List all guards/checks before link is accepted
+- What state does user enter after submitting?
+- Can user submit duplicate links?
+
+STAGE 3 — MATCHMAKING
+- How is tryMatchAtomic() triggered? Is it immediate or delayed?
+- What are the exact eligibility criteria for a partner?
+- How does the 24h anti-repeat rule work?
+- What happens if no partner found?
+- Can two users submit at same time and both go to queue without matching?
+- Is the 30s cron scheduler the main trigger or just backup?
+
+STAGE 4 — READY TO CUT FLOW
+- What message do users receive when matched?
+- What happens if one user presses Ready, other does not?
+- What happens if both press Ready?
+- What happens if neither presses Ready within 60s?
+- What happens if one presses Cancel?
+- Is link revealed at any point before both confirm Ready?
+
+STAGE 5 — ACTIVE MATCH
+- What happens after both press Ready?
+- How is the 10-minute expiry timer managed?
+- What happens when user presses Done Cut?
+- What is the proof submission flow?
+
+STAGE 6 — PROOF & COMPLETION
+- What counts as valid proof?
+- What happens if partner approves proof?
+- What happens if partner rejects proof?
+- What happens if partner does not respond to proof within 10 minutes?
+
+STAGE 7 — CURRENT LIVE STATE
+- Query MongoDB: how many users currently in each state?
+- Any users stuck in pending_ready, in_match, awaiting_proof?
+- Any activeMatchId pointing to non-active matches?
+- Queue size right now?
+
+STAGE 8 — KNOWN BUGS / RISKS
+- Any race conditions?
+- Any duplicate notification risks?
+- Any state where user can get permanently stuck?
+- Any missing error handling?
+
+Report all findings. No changes.
