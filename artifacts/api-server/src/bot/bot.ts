@@ -3871,8 +3871,8 @@ export function createBot(): Telegraf {
     console.log(`[BOTH_USERS_READY_LINKS_REVEALED] matchId=${matchId} — both ready, match activated, links revealed.`);
 
     const [u1, u2] = await Promise.all([
-      User.findOne({ telegramId: match.user1Id }).select("tiktokUsername"),
-      User.findOne({ telegramId: match.user2Id }).select("tiktokUsername"),
+      User.findOne({ telegramId: match.user1Id }).select("tiktokUsername telegramUsername"),
+      User.findOne({ telegramId: match.user2Id }).select("tiktokUsername telegramUsername"),
     ]);
 
     const matchButtons = Markup.inlineKeyboard([
@@ -3883,12 +3883,12 @@ export function createBot(): Telegraf {
     await Promise.all([
       bot.telegram.sendMessage(
         match.user1Id,
-        `🎉 Both users are ready!\n\nYour partner:\n@${u2?.tiktokUsername}\n\nTheir cut link:\n${match.link2}\n\nNow complete the cut and press ✅ Done Cut.`,
+        `🎉 Both users are ready!\n\nYour partner:\nTikTok: @${u2?.tiktokUsername}\nTelegram: @${u2?.telegramUsername || "no username"}\n\nTheir cut link:\n${match.link2}\n\nNow complete the cut and press ✅ Done Cut.`,
         { ...matchButtons },
       ),
       bot.telegram.sendMessage(
         match.user2Id,
-        `🎉 Both users are ready!\n\nYour partner:\n@${u1?.tiktokUsername}\n\nTheir cut link:\n${match.link1}\n\nNow complete the cut and press ✅ Done Cut.`,
+        `🎉 Both users are ready!\n\nYour partner:\nTikTok: @${u1?.tiktokUsername}\nTelegram: @${u1?.telegramUsername || "no username"}\n\nTheir cut link:\n${match.link1}\n\nNow complete the cut and press ✅ Done Cut.`,
         { ...matchButtons },
       ),
     ]);

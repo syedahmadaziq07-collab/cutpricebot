@@ -46675,8 +46675,8 @@ Example:
     ]);
     console.log(`[BOTH_USERS_READY_LINKS_REVEALED] matchId=${matchId} \u2014 both ready, match activated, links revealed.`);
     const [u1, u2] = await Promise.all([
-      User.findOne({ telegramId: match.user1Id }).select("tiktokUsername"),
-      User.findOne({ telegramId: match.user2Id }).select("tiktokUsername")
+      User.findOne({ telegramId: match.user1Id }).select("tiktokUsername telegramUsername"),
+      User.findOne({ telegramId: match.user2Id }).select("tiktokUsername telegramUsername")
     ]);
     const matchButtons = import_telegraf.Markup.inlineKeyboard([
       import_telegraf.Markup.button.callback("\u2705 Done Cut", "done_cut"),
@@ -46688,7 +46688,8 @@ Example:
         `\u{1F389} Both users are ready!
 
 Your partner:
-@${u2?.tiktokUsername}
+TikTok: @${u2?.tiktokUsername}
+Telegram: @${u2?.telegramUsername || "no username"}
 
 Their cut link:
 ${match.link2}
@@ -46701,7 +46702,8 @@ Now complete the cut and press \u2705 Done Cut.`,
         `\u{1F389} Both users are ready!
 
 Your partner:
-@${u1?.tiktokUsername}
+TikTok: @${u1?.tiktokUsername}
+Telegram: @${u1?.telegramUsername || "no username"}
 
 Their cut link:
 ${match.link1}
