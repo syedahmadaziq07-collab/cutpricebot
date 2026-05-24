@@ -1,0 +1,101 @@
+Refactor matchmaking flow completely. Do not keep the old instant reveal flow.
+
+Current problem:
+After user submits TikTok cut link, the bot immediately matches users and reveals partner links. This causes AFK/ghost users because one user may not be ready.
+
+New required flow:
+1. User submits TikTok cut link.
+2. Bot puts user into queue.
+3. When a partner is found, DO NOT reveal any TikTok links yet.
+4. Send both users a confirmation message with exactly 2 buttons:
+   ✅ Ready To Cut
+   ❌ Cancel
+5. Only when BOTH users press ✅ Ready To Cut:
+   - confirm the match
+   - reveal both TikTok links
+   - show the final buttons:
+     ✅ Done Cut
+     ❌ Cancel Match
+6. If either user presses ❌ Cancel before links are revealed:
+   - cancel the pending confirmation match
+   - DO NOT punish anyone
+   - keep the cancelling user out of that pending match
+   - put the other ready/waiting user back into matchmaking automatically
+   - notify the other user:
+     “❌ Partner cancelled before starting. Searching for a new cut buddy...”
+7. If one user does not press Ready To Cut within 60 seconds:
+   - cancel the pending confirmation match
+   - DO NOT reveal links
+   - DO NOT punish yet
+   - return the waiting/ready user to matchmaking
+   - notify both users clearly
+8. After BOTH users pressed Ready To Cut and links are revealed:
+   - old proof/done/cancel rules apply
+   - if user cancels after link reveal, apply existing punishment/cooldown
+   - if user does not press Done Cut, apply existing punishment/cooldown
+9. Important:
+   - Remove/disable old direct reveal logic.
+   - No TikTok link must be sent before both users confirm Ready To Cut.
+   - Prevent duplicate pending matches.
+   - Prevent duplicate admin notifications.
+   - Prevent user from matching with themselves.
+   - Keep existing anti-repeat 24h rule.
+   - Once a match is completed or cancelled after reveal, do not auto-rematch both users unless existing flow explicitly sends them back to queue.
+
+Implementation requirements:
+- Add a pending confirmation state/model if needed.
+- Store:
+  userAId
+  userBId
+  userAReady
+  userBReady
+  status: pending_ready | active | cancelled | expired
+  createdAt
+  expiresAt
+- Add callback handlers:
+  ready_to_cut:<matchId>
+  cancel_ready:<matchId>
+- On Ready:
+  update that user ready=true
+  if both ready=true, activate match and reveal links to both users.
+- On Cancel before ready complete:
+  cancel pending match, notify both users, auto-search a new partner only for the non-cancelling user if they are still eligible.
+- Add timeout job/task for pending ready matches after 60 seconds.
+- Update all user-facing text to be clear and professional.
+
+Expected message before reveal:
+🎯 Cut buddy found!
+
+Partner is ready to connect.
+Before we reveal links, both users must confirm.
+
+Press ✅ Ready To Cut if you are active now.
+
+Buttons:
+✅ Ready To Cut
+❌ Cancel
+
+Expected message after both ready:
+🎉 Both users are ready!
+
+Your partner:
+@username
+
+Their cut link:
+<link>
+
+Now complete the cut and press ✅ Done Cut.
+
+Buttons:
+✅ Done Cut
+❌ Cancel Match
+
+Verify:
+- Test with 2 users.
+- Test user A ready, user B cancel.
+- Test user A ready, user B timeout.
+- Test both ready.
+- Test no links are revealed before both ready.
+- Test no punishment before link reveal.
+- Test punishment still works after link reveal.
+- Commit and push to GitHub main.

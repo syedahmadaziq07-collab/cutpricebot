@@ -151,7 +151,7 @@ const NO_RESPONSE_TIMEOUT_MS = 10 * 60 * 1000;
 const NO_RESPONSE_REMINDER_MS = 8 * 60 * 1000;
 const NO_RESPONSE_COOLDOWN_30M_MS = 30 * 60 * 1000;
 const NO_RESPONSE_24H_MS = 24 * 60 * 60 * 1000;
-const READY_TIMEOUT_MS = 5 * 60 * 1000;
+const READY_TIMEOUT_MS = 60 * 1000;
 
 const INACTIVITY_ACTIVE_STATES = [
   "pending_ready",
@@ -1190,27 +1190,27 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
 
   const readyButtons = Markup.inlineKeyboard([
     [Markup.button.callback("✅ Ready To Cut", `ready_to_cut:${matchId}`)],
-    [Markup.button.callback("❌ Cancel Match", `cancel_ready_match:${matchId}`)],
+    [Markup.button.callback("❌ Cancel", `cancel_ready:${matchId}`)],
   ]);
 
   // Send confirmation message — do NOT reveal cut links yet
   await Promise.all([
     bot.telegram.sendMessage(
       currentTelegramId,
-      `🎯 Cut buddy found!\n\nBefore we show the cut link, please confirm you are ready.\n\nPress ✅ Ready To Cut to continue, or ❌ Cancel Match to back out.\n\n_(No cooldown if you cancel now — links haven't been shared yet)_`,
-      { parse_mode: "Markdown", ...readyButtons },
+      `🎯 Cut buddy found!\n\nPartner is ready to connect.\nBefore we reveal links, both users must confirm.\n\nPress ✅ Ready To Cut if you are active now.`,
+      { ...readyButtons },
     ),
     bot.telegram.sendMessage(
       partner.telegramId,
-      `🎯 Cut buddy found!\n\nBefore we show the cut link, please confirm you are ready.\n\nPress ✅ Ready To Cut to continue, or ❌ Cancel Match to back out.\n\n_(No cooldown if you cancel now — links haven't been shared yet)_`,
-      { parse_mode: "Markdown", ...readyButtons },
+      `🎯 Cut buddy found!\n\nPartner is ready to connect.\nBefore we reveal links, both users must confirm.\n\nPress ✅ Ready To Cut if you are active now.`,
+      { ...readyButtons },
     ),
   ]);
 
-  // Start 5-minute ready timeout — if neither/one user confirms, cancel without punishment
-  console.log(`[READY_TIMEOUT_STARTED] matchId=${matchId} — 5-minute ready timeout started.`);
+  // Start 60-second ready timeout — if neither/one user confirms, cancel without punishment
+  console.log(`[READY_TIMEOUT_STARTED] matchId=${matchId} — 60-second ready timeout started.`);
   const readyTimer = setTimeout(async () => {
-    console.log(`[READY_TIMEOUT_TRIGGERED] matchId=${matchId} — 5-minute ready window elapsed.`);
+    console.log(`[READY_TIMEOUT_TRIGGERED] matchId=${matchId} — 60-second ready window elapsed.`);
     await handleReadyTimeout(bot, matchId, currentTelegramId, partner.telegramId);
   }, READY_TIMEOUT_MS);
   readyTimers.set(matchId, readyTimer);
@@ -1222,7 +1222,7 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
   return true;
 }
 
-// Handles ready timeout — no punishment, both users must submit new link
+// Handles ready timeout — no punishment; auto-requeue users who had already pressed Ready
 async function handleReadyTimeout(
   bot: Telegraf,
   matchId: string,
@@ -1238,7 +1238,7 @@ async function handleReadyTimeout(
   await Match.updateOne({ _id: matchId }, { status: "cancelled" });
   readyTimers.delete(matchId);
 
-  console.log(`[READY_TIMEOUT_CANCELLED] matchId=${matchId} — neither/one user confirmed ready in time. No punishment.`);
+  console.log(`[READY_TIMEOUT_CANCELLED] matchId=${matchId} — 60-second window elapsed without both confirming. No punishment.`);
 
   stopInactivityReminders(matchId, user1Id);
   stopInactivityReminders(matchId, user2Id);
@@ -1249,21 +1249,42 @@ async function handleReadyTimeout(
     if (!["pending_ready", "inqueue"].includes(user.state)) continue;
 
     await Queue.deleteOne({ telegramId: uid });
-    await User.updateOne(
-      { telegramId: uid },
-      { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null },
-    );
-    console.log(`[READY_TIMEOUT_CANCELLED] telegramId=${uid} reset to awaiting_cut_link — no punishment.`);
 
-    try {
-      await bot.telegram.sendMessage(
-        uid,
-        `⏰ Ready confirmation timed out.\n\nNo worries — no cooldown applied.\n\nSubmit a new cut link whenever you're ready to match again 👀✨`,
+    const wasReady = uid === user1Id ? match.user1ReadyToCut : match.user2ReadyToCut;
+    const storedLink = uid === user1Id ? match.link1 : match.link2;
+    const userLink = user.pendingLink ?? storedLink;
+
+    if (wasReady && userLink) {
+      // This user had confirmed Ready — auto-requeue them for a new partner
+      await User.updateOne(
+        { telegramId: uid },
+        { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null },
       );
-    } catch { /* user may have blocked bot */ }
+      console.log(`[READY_TIMEOUT_REQUEUE] telegramId=${uid} — was ready, auto-requeueing for new partner.`);
+      try {
+        await bot.telegram.sendMessage(
+          uid,
+          `⏰ Partner did not confirm in time.\n\n❌ Partner cancelled before starting. Searching for a new cut buddy...`,
+        );
+      } catch { /* user may have blocked bot */ }
+      await addToQueue(bot, uid, userLink);
+    } else {
+      // This user had not pressed Ready yet (or no link) — just reset them
+      await User.updateOne(
+        { telegramId: uid },
+        { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null },
+      );
+      console.log(`[READY_TIMEOUT_RESET] telegramId=${uid} — had not confirmed ready, reset. No punishment.`);
+      try {
+        await bot.telegram.sendMessage(
+          uid,
+          `⏰ Ready confirmation timed out. No cooldown applied.\n\nSubmit a new cut link whenever you're ready to match again.`,
+        );
+      } catch { /* user may have blocked bot */ }
+    }
   }
 
-  console.log(`[MATCH_FULLY_TERMINATED] matchId=${matchId} — ready timeout, both users reset, no punishment.`);
+  console.log(`[MATCH_FULLY_TERMINATED] matchId=${matchId} — ready timeout, both users handled, no punishment.`);
 }
 
 // Add a user to the Queue collection (called only when tryMatchAtomic found no partner).
@@ -3424,12 +3445,12 @@ export function createBot(): Telegraf {
     await Promise.all([
       bot.telegram.sendMessage(
         match.user1Id,
-        `✅ Both users are ready!\n\nHere is your partner's cut link:\n${match.link2}\n\nYour partner:\n@${u2?.tiktokUsername} 👀\n\nGo show some love and finish the cut first 🤝✨`,
+        `🎉 Both users are ready!\n\nYour partner:\n@${u2?.tiktokUsername}\n\nTheir cut link:\n${match.link2}\n\nNow complete the cut and press ✅ Done Cut.`,
         { ...matchButtons },
       ),
       bot.telegram.sendMessage(
         match.user2Id,
-        `✅ Both users are ready!\n\nHere is your partner's cut link:\n${match.link1}\n\nYour partner:\n@${u1?.tiktokUsername} 👀\n\nGo show some love and finish the cut first 🤝✨`,
+        `🎉 Both users are ready!\n\nYour partner:\n@${u1?.tiktokUsername}\n\nTheir cut link:\n${match.link1}\n\nNow complete the cut and press ✅ Done Cut.`,
         { ...matchButtons },
       ),
     ]);
@@ -3446,8 +3467,8 @@ export function createBot(): Telegraf {
     void startInactivityReminders(bot, matchId, match.user2Id, "in_match");
   });
 
-  // ─── Cancel Ready Match callback (before link reveal — no punishment) ───────
-  bot.action(/^cancel_ready_match:(.+)$/, async (ctx) => {
+  // ─── Cancel Ready callback (before link reveal — no punishment) ─────────────
+  bot.action(/^cancel_ready:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const telegramId = ctx.from!.id;
     const matchId = ctx.match[1];
@@ -3456,7 +3477,7 @@ export function createBot(): Telegraf {
 
     const user = await User.findOne({ telegramId });
     if (!user || user.state !== "pending_ready") {
-      console.log(`[DUPLICATE_CALLBACK_BLOCKED] cancel_ready_match — telegramId=${telegramId} matchId=${matchId} — not in pending_ready state.`);
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] cancel_ready — telegramId=${telegramId} matchId=${matchId} — not in pending_ready state.`);
       await ctx.reply("⚠️ Action already processed.");
       return;
     }
@@ -3469,7 +3490,7 @@ export function createBot(): Telegraf {
     );
 
     if (!match) {
-      console.log(`[DUPLICATE_CALLBACK_BLOCKED] cancel_ready_match — telegramId=${telegramId} matchId=${matchId} — no pending_ready match found.`);
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] cancel_ready — telegramId=${telegramId} matchId=${matchId} — no pending_ready match found.`);
       await ctx.reply("⚠️ Action already processed.");
       return;
     }
@@ -3495,9 +3516,7 @@ export function createBot(): Telegraf {
     );
     console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${telegramId} path=pre_cut_cancel_no_punishment`);
 
-    await ctx.reply(
-      `❌ Match cancelled.\n\nNo worries — no cooldown applied because the cut link was not revealed yet.`,
-    );
+    await ctx.reply(`❌ Match cancelled. No cooldown applied.`);
 
     // Handle partner
     const partner = await User.findOne({ telegramId: partnerId });
@@ -3515,10 +3534,12 @@ export function createBot(): Telegraf {
             { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null },
           );
 
-          await bot.telegram.sendMessage(
-            partnerId,
-            `⚠️ Your cut buddy cancelled before starting.\n\nYou were ready, so we're finding another partner for you now 👀✨`,
-          );
+          try {
+            await bot.telegram.sendMessage(
+              partnerId,
+              `❌ Partner cancelled before starting. Searching for a new cut buddy...`,
+            );
+          } catch { /* partner may have blocked bot */ }
 
           // Re-insert into queue so they get a new partner (through normal flow)
           await addToQueue(bot, partnerId, partnerLink);
@@ -3531,7 +3552,7 @@ export function createBot(): Telegraf {
           try {
             await bot.telegram.sendMessage(
               partnerId,
-              `⚠️ Your cut buddy cancelled before starting.\n\nNo worries — no cooldown applied. Submit a new cut link to find another partner 👀✨`,
+              `❌ Partner cancelled before starting. Submit a new cut link to search again.`,
             );
           } catch { /* partner may have blocked bot */ }
         }
@@ -3545,7 +3566,7 @@ export function createBot(): Telegraf {
         try {
           await bot.telegram.sendMessage(
             partnerId,
-            `❌ Match cancelled.\n\nYour partner decided not to start.\n\nNo cooldown applied — submit a new cut link whenever you're ready 👀✨`,
+            `❌ Partner cancelled before starting. No cooldown applied — submit a new cut link whenever you're ready.`,
           );
         } catch { /* partner may have blocked bot */ }
       }

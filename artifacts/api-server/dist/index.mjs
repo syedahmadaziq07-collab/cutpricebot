@@ -43160,7 +43160,7 @@ var NO_RESPONSE_TIMEOUT_MS = 10 * 60 * 1e3;
 var NO_RESPONSE_REMINDER_MS = 8 * 60 * 1e3;
 var NO_RESPONSE_COOLDOWN_30M_MS = 30 * 60 * 1e3;
 var NO_RESPONSE_24H_MS = 24 * 60 * 60 * 1e3;
-var READY_TIMEOUT_MS = 5 * 60 * 1e3;
+var READY_TIMEOUT_MS = 60 * 1e3;
 var INACTIVITY_ACTIVE_STATES = [
   "pending_ready",
   "in_match",
@@ -44044,35 +44044,33 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
   console.log(`[MATCH_HISTORY_CREATED] pairKey=${pairKey} matchedAt=${now.toISOString()}`);
   const readyButtons = import_telegraf.Markup.inlineKeyboard([
     [import_telegraf.Markup.button.callback("\u2705 Ready To Cut", `ready_to_cut:${matchId}`)],
-    [import_telegraf.Markup.button.callback("\u274C Cancel Match", `cancel_ready_match:${matchId}`)]
+    [import_telegraf.Markup.button.callback("\u274C Cancel", `cancel_ready:${matchId}`)]
   ]);
   await Promise.all([
     bot.telegram.sendMessage(
       currentTelegramId,
       `\u{1F3AF} Cut buddy found!
 
-Before we show the cut link, please confirm you are ready.
+Partner is ready to connect.
+Before we reveal links, both users must confirm.
 
-Press \u2705 Ready To Cut to continue, or \u274C Cancel Match to back out.
-
-_(No cooldown if you cancel now \u2014 links haven't been shared yet)_`,
-      { parse_mode: "Markdown", ...readyButtons }
+Press \u2705 Ready To Cut if you are active now.`,
+      { ...readyButtons }
     ),
     bot.telegram.sendMessage(
       partner.telegramId,
       `\u{1F3AF} Cut buddy found!
 
-Before we show the cut link, please confirm you are ready.
+Partner is ready to connect.
+Before we reveal links, both users must confirm.
 
-Press \u2705 Ready To Cut to continue, or \u274C Cancel Match to back out.
-
-_(No cooldown if you cancel now \u2014 links haven't been shared yet)_`,
-      { parse_mode: "Markdown", ...readyButtons }
+Press \u2705 Ready To Cut if you are active now.`,
+      { ...readyButtons }
     )
   ]);
-  console.log(`[READY_TIMEOUT_STARTED] matchId=${matchId} \u2014 5-minute ready timeout started.`);
+  console.log(`[READY_TIMEOUT_STARTED] matchId=${matchId} \u2014 60-second ready timeout started.`);
   const readyTimer = setTimeout(async () => {
-    console.log(`[READY_TIMEOUT_TRIGGERED] matchId=${matchId} \u2014 5-minute ready window elapsed.`);
+    console.log(`[READY_TIMEOUT_TRIGGERED] matchId=${matchId} \u2014 60-second ready window elapsed.`);
     await handleReadyTimeout(bot, matchId, currentTelegramId, partner.telegramId);
   }, READY_TIMEOUT_MS);
   readyTimers.set(matchId, readyTimer);
@@ -44089,7 +44087,7 @@ async function handleReadyTimeout(bot, matchId, user1Id, user2Id) {
   }
   await Match.updateOne({ _id: matchId }, { status: "cancelled" });
   readyTimers.delete(matchId);
-  console.log(`[READY_TIMEOUT_CANCELLED] matchId=${matchId} \u2014 neither/one user confirmed ready in time. No punishment.`);
+  console.log(`[READY_TIMEOUT_CANCELLED] matchId=${matchId} \u2014 60-second window elapsed without both confirming. No punishment.`);
   stopInactivityReminders(matchId, user1Id);
   stopInactivityReminders(matchId, user2Id);
   for (const uid of [user1Id, user2Id]) {
@@ -44097,24 +44095,43 @@ async function handleReadyTimeout(bot, matchId, user1Id, user2Id) {
     if (!user) continue;
     if (!["pending_ready", "inqueue"].includes(user.state)) continue;
     await Queue.deleteOne({ telegramId: uid });
-    await User.updateOne(
-      { telegramId: uid },
-      { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null }
-    );
-    console.log(`[READY_TIMEOUT_CANCELLED] telegramId=${uid} reset to awaiting_cut_link \u2014 no punishment.`);
-    try {
-      await bot.telegram.sendMessage(
-        uid,
-        `\u23F0 Ready confirmation timed out.
-
-No worries \u2014 no cooldown applied.
-
-Submit a new cut link whenever you're ready to match again \u{1F440}\u2728`
+    const wasReady = uid === user1Id ? match.user1ReadyToCut : match.user2ReadyToCut;
+    const storedLink = uid === user1Id ? match.link1 : match.link2;
+    const userLink = user.pendingLink ?? storedLink;
+    if (wasReady && userLink) {
+      await User.updateOne(
+        { telegramId: uid },
+        { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null }
       );
-    } catch {
+      console.log(`[READY_TIMEOUT_REQUEUE] telegramId=${uid} \u2014 was ready, auto-requeueing for new partner.`);
+      try {
+        await bot.telegram.sendMessage(
+          uid,
+          `\u23F0 Partner did not confirm in time.
+
+\u274C Partner cancelled before starting. Searching for a new cut buddy...`
+        );
+      } catch {
+      }
+      await addToQueue(bot, uid, userLink);
+    } else {
+      await User.updateOne(
+        { telegramId: uid },
+        { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null }
+      );
+      console.log(`[READY_TIMEOUT_RESET] telegramId=${uid} \u2014 had not confirmed ready, reset. No punishment.`);
+      try {
+        await bot.telegram.sendMessage(
+          uid,
+          `\u23F0 Ready confirmation timed out. No cooldown applied.
+
+Submit a new cut link whenever you're ready to match again.`
+        );
+      } catch {
+      }
     }
   }
-  console.log(`[MATCH_FULLY_TERMINATED] matchId=${matchId} \u2014 ready timeout, both users reset, no punishment.`);
+  console.log(`[MATCH_FULLY_TERMINATED] matchId=${matchId} \u2014 ready timeout, both users handled, no punishment.`);
 }
 async function addToQueue(_bot, telegramId, pendingLink) {
   const existing = await Queue.findOne({ telegramId });
@@ -46208,28 +46225,28 @@ Example:
     await Promise.all([
       bot.telegram.sendMessage(
         match.user1Id,
-        `\u2705 Both users are ready!
-
-Here is your partner's cut link:
-${match.link2}
+        `\u{1F389} Both users are ready!
 
 Your partner:
-@${u2?.tiktokUsername} \u{1F440}
+@${u2?.tiktokUsername}
 
-Go show some love and finish the cut first \u{1F91D}\u2728`,
+Their cut link:
+${match.link2}
+
+Now complete the cut and press \u2705 Done Cut.`,
         { ...matchButtons }
       ),
       bot.telegram.sendMessage(
         match.user2Id,
-        `\u2705 Both users are ready!
-
-Here is your partner's cut link:
-${match.link1}
+        `\u{1F389} Both users are ready!
 
 Your partner:
-@${u1?.tiktokUsername} \u{1F440}
+@${u1?.tiktokUsername}
 
-Go show some love and finish the cut first \u{1F91D}\u2728`,
+Their cut link:
+${match.link1}
+
+Now complete the cut and press \u2705 Done Cut.`,
         { ...matchButtons }
       )
     ]);
@@ -46242,7 +46259,7 @@ Go show some love and finish the cut first \u{1F91D}\u2728`,
     void startInactivityReminders(bot, matchId, match.user1Id, "in_match");
     void startInactivityReminders(bot, matchId, match.user2Id, "in_match");
   });
-  bot.action(/^cancel_ready_match:(.+)$/, async (ctx) => {
+  bot.action(/^cancel_ready:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const telegramId = ctx.from.id;
     const matchId = ctx.match[1];
@@ -46252,7 +46269,7 @@ Go show some love and finish the cut first \u{1F91D}\u2728`,
     }
     const user = await User.findOne({ telegramId });
     if (!user || user.state !== "pending_ready") {
-      console.log(`[DUPLICATE_CALLBACK_BLOCKED] cancel_ready_match \u2014 telegramId=${telegramId} matchId=${matchId} \u2014 not in pending_ready state.`);
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] cancel_ready \u2014 telegramId=${telegramId} matchId=${matchId} \u2014 not in pending_ready state.`);
       await ctx.reply("\u26A0\uFE0F Action already processed.");
       return;
     }
@@ -46262,7 +46279,7 @@ Go show some love and finish the cut first \u{1F91D}\u2728`,
       { new: false }
     );
     if (!match) {
-      console.log(`[DUPLICATE_CALLBACK_BLOCKED] cancel_ready_match \u2014 telegramId=${telegramId} matchId=${matchId} \u2014 no pending_ready match found.`);
+      console.log(`[DUPLICATE_CALLBACK_BLOCKED] cancel_ready \u2014 telegramId=${telegramId} matchId=${matchId} \u2014 no pending_ready match found.`);
       await ctx.reply("\u26A0\uFE0F Action already processed.");
       return;
     }
@@ -46283,11 +46300,7 @@ Go show some love and finish the cut first \u{1F91D}\u2728`,
       { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null }
     );
     console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${telegramId} path=pre_cut_cancel_no_punishment`);
-    await ctx.reply(
-      `\u274C Match cancelled.
-
-No worries \u2014 no cooldown applied because the cut link was not revealed yet.`
-    );
+    await ctx.reply(`\u274C Match cancelled. No cooldown applied.`);
     const partner = await User.findOne({ telegramId: partnerId });
     if (partner) {
       await Queue.deleteOne({ telegramId: partnerId });
@@ -46299,12 +46312,13 @@ No worries \u2014 no cooldown applied because the cut link was not revealed yet.
             { telegramId: partnerId },
             { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, activeMatchId: null }
           );
-          await bot.telegram.sendMessage(
-            partnerId,
-            `\u26A0\uFE0F Your cut buddy cancelled before starting.
-
-You were ready, so we're finding another partner for you now \u{1F440}\u2728`
-          );
+          try {
+            await bot.telegram.sendMessage(
+              partnerId,
+              `\u274C Partner cancelled before starting. Searching for a new cut buddy...`
+            );
+          } catch {
+          }
           await addToQueue(bot, partnerId, partnerLink);
         } else {
           await User.updateOne(
@@ -46315,9 +46329,7 @@ You were ready, so we're finding another partner for you now \u{1F440}\u2728`
           try {
             await bot.telegram.sendMessage(
               partnerId,
-              `\u26A0\uFE0F Your cut buddy cancelled before starting.
-
-No worries \u2014 no cooldown applied. Submit a new cut link to find another partner \u{1F440}\u2728`
+              `\u274C Partner cancelled before starting. Submit a new cut link to search again.`
             );
           } catch {
           }
@@ -46331,11 +46343,7 @@ No worries \u2014 no cooldown applied. Submit a new cut link to find another par
         try {
           await bot.telegram.sendMessage(
             partnerId,
-            `\u274C Match cancelled.
-
-Your partner decided not to start.
-
-No cooldown applied \u2014 submit a new cut link whenever you're ready \u{1F440}\u2728`
+            `\u274C Partner cancelled before starting. No cooldown applied \u2014 submit a new cut link whenever you're ready.`
           );
         } catch {
         }
