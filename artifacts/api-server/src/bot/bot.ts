@@ -319,6 +319,16 @@ function isTikTokProfileLink(input: string): boolean {
   return false;
 }
 
+// Returns true for ANY TikTok link (cut link, profile link, or any tiktok.com URL).
+function isAnyTikTokLink(input: string): boolean {
+  const trimmed = input.trim();
+  if (/(?:https?:\/\/)?(?:www\.|vt\.)?tiktok\.com\//i.test(trimmed)) return true;
+  if (/https?:\/\/vm\.tiktok\.com\//i.test(trimmed)) return true;
+  if (isTikTokCutLink(trimmed)) return true;
+  if (isTikTokProfileLink(trimmed)) return true;
+  return false;
+}
+
 async function checkAndApplyDailyReset(bot: Telegraf, telegramId: number): Promise<void> {
   const user = await User.findOne({ telegramId });
   if (!user || user.tiktokUsername === "__pending__") return;
@@ -2867,6 +2877,165 @@ export function createBot(): Telegraf {
     console.log(`[NO_RESPONSE_TIMEOUT_STARTED] matchId=${matchId} proofOwnerId=${telegramId} inactivePartnerId=${partnerId} — 10-min timer started.`);
   });
 
+  // ── Document handler: accept image documents as proof, reject everything else ──
+  bot.on(message("document"), async (ctx) => {
+    const telegramId = ctx.from.id;
+    const doc = ctx.message.document;
+    console.log(`[MSG] document from telegramId=${telegramId} mime=${doc.mime_type ?? "unknown"}`);
+
+    const sus = await checkSuspension(telegramId);
+    if (sus.suspended) {
+      if (sus.reason === "banned") { console.log(`[BANNED_USER_BLOCKED_ACTION] telegramId=${telegramId} action=document`); }
+      else { console.log(`[COOLDOWN_USER_BLOCKED_ACTION] telegramId=${telegramId} action=document`); }
+      await ctx.reply(sus.message); return;
+    }
+
+    await checkAndApplyDailyReset(bot, telegramId);
+
+    const user = await User.findOne({ telegramId });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("Kau belum register lagi. Taip /start dulu k!");
+      return;
+    }
+
+    const isImageDocument = (doc.mime_type ?? "").startsWith("image/");
+
+    if (!isImageDocument) {
+      console.log(`[NON_IMAGE_DOCUMENT_REJECTED] telegramId=${telegramId} mime=${doc.mime_type ?? "unknown"} state=${user.state}`);
+      await ctx.reply("❌ Hanya gambar/screenshot sahaja diterima sebagai bukti.\n\nSila hantar screenshot, bukan fail lain.");
+      return;
+    }
+
+    // Image document — treat same as photo proof, subject to same state guards
+    if (user.state === "pending_ready") {
+      await ctx.reply("👉 Please press ✅ Ready To Cut or ❌ Cancel Match using the buttons above first.");
+      return;
+    }
+    if (user.state === "in_match") {
+      await ctx.reply("Sila tekan butang *✅ Done Cut* dahulu sebelum menghantar bukti ya.", { parse_mode: "Markdown" });
+      return;
+    }
+    if (user.state === "awaiting_proof_account_selection") {
+      await ctx.reply("Sila pilih akaun TikTok yang anda gunakan dahulu 👆✨");
+      return;
+    }
+    if (user.state === "awaiting_proof_cut_username") {
+      await ctx.reply("Sila taip username TikTok yang anda gunakan dahulu ✍️");
+      return;
+    }
+    if (user.state === "awaiting_partner_approval") {
+      await ctx.reply("⏳ Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.");
+      return;
+    }
+    if (user.state !== "awaiting_proof") {
+      await ctx.reply("Oopsie 😭\n\nThere's no active cut match to verify right now.");
+      return;
+    }
+
+    const match = await Match.findOne({
+      $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
+      status: "active",
+    });
+    if (!match) {
+      await ctx.reply("Hmm takde match active la. Cuba /start balik k.");
+      return;
+    }
+
+    const isUser1 = match.user1Id === telegramId;
+    const partnerId = isUser1 ? match.user2Id : match.user1Id;
+    const matchId = match._id.toString();
+
+    const alreadySubmitted = isUser1 ? match.user1ProofSubmitted : match.user2ProofSubmitted;
+    if (alreadySubmitted) {
+      await ctx.reply("⏳ Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.");
+      return;
+    }
+
+    const proofMessageId = ctx.message.message_id.toString();
+    const proofFileId = doc.file_id;
+    const now = new Date();
+
+    const freshUser = await User.findOne({ telegramId }).select("proofCutByUsername");
+    const proofCutByUsername = freshUser?.proofCutByUsername ?? null;
+
+    if (isUser1) {
+      await Match.updateOne({ _id: match._id }, {
+        user1ProofSubmitted: true,
+        user1ProofMessageId: proofMessageId,
+        user1ProofSubmittedAt: now,
+        user1Confirmed: true,
+        user1ProofCutByUsername: proofCutByUsername,
+      });
+    } else {
+      await Match.updateOne({ _id: match._id }, {
+        user2ProofSubmitted: true,
+        user2ProofMessageId: proofMessageId,
+        user2ProofSubmittedAt: now,
+        user2Confirmed: true,
+        user2ProofCutByUsername: proofCutByUsername,
+      });
+    }
+
+    console.log(`[PROOF_SUBMITTED_DOC] telegramId=${telegramId} submitted image document proof for matchId=${matchId} proofCutByUsername=${proofCutByUsername ?? "null"}.`);
+    await User.updateOne({ telegramId }, { state: "awaiting_partner_approval", proofCutByUsername: null });
+    await ctx.reply("✅ Proof received successfully!\n\nYour cut buddy is checking it now 👀✨");
+
+    stopInactivityReminders(matchId, telegramId);
+    const isUser1ForApproval = isUser1;
+    void startInactivityReminders(bot, matchId, partnerId, "awaiting_partner_approval", async (mid) => {
+      const m = await Match.findOne({ _id: mid, status: "active" });
+      if (!m) return false;
+      return isUser1ForApproval ? !m.user1ProofApprovedByPartner : !m.user2ProofApprovedByPartner;
+    });
+
+    const approveButtons = Markup.inlineKeyboard([
+      Markup.button.callback("✅ Approve Proof", `approve_proof:${matchId}:${telegramId}`),
+      Markup.button.callback("❌ Reject Proof", `reject_proof:${matchId}:${telegramId}`),
+    ]);
+
+    const proofAccountLine = proofCutByUsername
+      ? `\n\nCut done using TikTok account:\n@${proofCutByUsername}`
+      : "";
+
+    await bot.telegram.sendDocument(partnerId, proofFileId, {
+      caption: `📸 Your cut buddy just sent their proof!${proofAccountLine}\n\nTake a quick look below and make sure everything's valid 👀✨`,
+      parse_mode: "Markdown",
+      ...approveButtons,
+    });
+    console.log(`[PROOF_SENT_TO_PARTNER_DOC] telegramId=${telegramId} image doc proof forwarded to partnerId=${partnerId} for matchId=${matchId}.`);
+
+    const proofTimerKey = `proof:${matchId}:${telegramId}`;
+    if (proofTimers.has(proofTimerKey)) clearTimeout(proofTimers.get(proofTimerKey)!);
+    const proofTimer = setTimeout(async () => {
+      proofTimers.delete(proofTimerKey);
+      await handleProofTimeout(bot, matchId, telegramId, partnerId);
+    }, NO_RESPONSE_TIMEOUT_MS);
+    proofTimers.set(proofTimerKey, proofTimer);
+    console.log(`[NO_RESPONSE_TIMEOUT_STARTED] matchId=${matchId} proofOwnerId=${telegramId} inactivePartnerId=${partnerId} — 10-min timer started (doc proof).`);
+  });
+
+  // ── Video handler: reject videos clearly — only screenshots are accepted ──
+  bot.on(message("video"), async (ctx) => {
+    const telegramId = ctx.from.id;
+    console.log(`[MSG] video from telegramId=${telegramId}`);
+
+    const sus = await checkSuspension(telegramId);
+    if (sus.suspended) { await ctx.reply(sus.message); return; }
+
+    const user = await User.findOne({ telegramId });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("Kau belum register lagi. Taip /start dulu k!");
+      return;
+    }
+
+    if (user.state === "awaiting_proof") {
+      console.log(`[VIDEO_AS_PROOF_REJECTED] telegramId=${telegramId} — video sent instead of proof screenshot`);
+      await ctx.reply("⚠️ Sila hantar screenshot bukti cut, bukan video.");
+    } else {
+      await ctx.reply("❌ Video tidak diterima. Sila hantar screenshot sebagai bukti jika perlu.");
+    }
+  });
+
   bot.on(message("text"), async (ctx) => {
     const telegramId = ctx.from.id;
     const text = ctx.message.text.trim();
@@ -3183,7 +3352,11 @@ export function createBot(): Telegraf {
     }
 
     if (user.state === "inqueue") {
-      await ctx.reply("Still finding your cut buddy 🔒✨\n\nHang tight for a few more seconds 👀");
+      if (isAnyTikTokLink(text)) {
+        await ctx.reply("⚠️ Kau sudah dalam queue. Link TikTok tidak diterima sekarang.\n\nTunggu je ya, sedang mencari partner 🔒✨");
+      } else {
+        await ctx.reply("Still finding your cut buddy 🔒✨\n\nHang tight for a few more seconds 👀");
+      }
       return;
     }
 
@@ -3207,6 +3380,13 @@ export function createBot(): Telegraf {
 
     if (user.state === "awaiting_proof_cut_username") {
       const rawInput = text.trim();
+
+      if (isAnyTikTokLink(rawInput)) {
+        console.log(`[PROOF_ACCOUNT_TIKTOK_LINK_REJECTED] telegramId=${telegramId} — TikTok link sent instead of username: "${rawInput}"`);
+        await ctx.reply("⚠️ Sila taip username TikTok sahaja, bukan link TikTok.\n\nContoh:\n@yourusername");
+        return;
+      }
+
       const normalizedUsername = rawInput.replace(/^@/, "").toLowerCase().trim();
 
       if (!normalizedUsername || !/^[\w.]+$/.test(normalizedUsername)) {
@@ -3245,22 +3425,40 @@ export function createBot(): Telegraf {
     }
 
     if (user.state === "pending_ready") {
-      await ctx.reply("👉 Please press ✅ Ready To Cut or ❌ Cancel Match using the buttons above.");
+      if (isAnyTikTokLink(text)) {
+        await ctx.reply("⚠️ Link TikTok tidak diterima sekarang.\n\nSila tekan ✅ Ready To Cut atau ❌ Cancel Match menggunakan butang di atas.");
+      } else {
+        await ctx.reply("👉 Please press ✅ Ready To Cut or ❌ Cancel Match using the buttons above.");
+      }
       return;
     }
 
     if (user.state === "in_match") {
-      await ctx.reply("Sila tekan butang *✅ Done Cut* apabila anda selesai cut link partner.", { parse_mode: "Markdown" });
+      if (isAnyTikTokLink(text)) {
+        console.log(`[TIKTOK_LINK_DURING_MATCH_REJECTED] telegramId=${telegramId} — TikTok link sent while in_match: "${text.slice(0, 100)}"`);
+        await ctx.reply("⚠️ Link TikTok tidak diterima sebagai bukti.\n\nSila tekan butang *✅ Done Cut* apabila anda selesai cut link partner, kemudian hantar screenshot.", { parse_mode: "Markdown" });
+      } else {
+        await ctx.reply("Sila tekan butang *✅ Done Cut* apabila anda selesai cut link partner.", { parse_mode: "Markdown" });
+      }
       return;
     }
 
     if (user.state === "awaiting_proof") {
-      await ctx.reply("Sila hantar *screenshot* sebagai bukti anda telah cut link partner. 📸", { parse_mode: "Markdown" });
+      if (isAnyTikTokLink(text)) {
+        console.log(`[TIKTOK_LINK_AS_PROOF_REJECTED] telegramId=${telegramId} — TikTok link sent instead of proof screenshot: "${text.slice(0, 100)}"`);
+        await ctx.reply("⚠️ Sila hantar screenshot bukti cut, bukan link TikTok.");
+      } else {
+        await ctx.reply("Sila hantar *screenshot* sebagai bukti anda telah cut link partner. 📸", { parse_mode: "Markdown" });
+      }
       return;
     }
 
     if (user.state === "awaiting_partner_approval") {
-      await ctx.reply("⏳ Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.");
+      if (isAnyTikTokLink(text)) {
+        await ctx.reply("⚠️ Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve dahulu.\n\nLink TikTok tidak diterima.");
+      } else {
+        await ctx.reply("⏳ Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.");
+      }
       return;
     }
 
