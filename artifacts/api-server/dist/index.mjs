@@ -44721,6 +44721,18 @@ Ayy @${existingUser.tiktokUsername} is back again \u{1F606}
 Drop your TikTok cut price link below to start swapping \u{1F517}\u2728`,
         { parse_mode: "Markdown" }
       );
+      await ctx.reply(
+        "Quick actions:",
+        import_telegraf.Markup.inlineKeyboard([
+          [
+            import_telegraf.Markup.button.callback("\u{1F4B0} Balance & Cuts", "check_balance"),
+            import_telegraf.Markup.button.callback("\u{1F517} Referral Link", "check_referral")
+          ],
+          [
+            import_telegraf.Markup.button.callback("\u{1F4CA} My Status", "check_status")
+          ]
+        ])
+      );
       await Queue.deleteOne({ telegramId });
       await User.updateOne({ telegramId }, { state: "awaiting_cut_link" });
       return;
@@ -47190,6 +47202,76 @@ ${refLink}`,
 Cut baki: *${user.cutBalance}*
 
 Hantar TikTok cut price link baru kau \u{1F447}`,
+      { parse_mode: "Markdown" }
+    );
+  });
+  bot.action("check_balance", async (ctx) => {
+    await ctx.answerCbQuery();
+    const user = await User.findOne({ telegramId: ctx.from.id });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("Kau belum register lagi. Taip /start dulu k!");
+      return;
+    }
+    await ctx.reply(
+      `\u{1F4B0} *Balance kau:*
+
+Cut baki: *${user.cutBalance}*
+Strike: ${user.strikes}/3
+
+Referral link kau:
+\u{1F447}`,
+      { parse_mode: "Markdown" }
+    );
+    const me = await bot.telegram.getMe();
+    const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
+    await ctx.reply(refLink);
+  });
+  bot.action("check_referral", async (ctx) => {
+    await ctx.answerCbQuery();
+    const user = await User.findOne({ telegramId: ctx.from.id });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("Kau belum register lagi. Taip /start dulu k!");
+      return;
+    }
+    const me = await bot.telegram.getMe();
+    const refLink = `https://t.me/${me.username}?start=ref_${user.referralCode}`;
+    await ctx.reply(
+      `\u{1F525} Your referral link:
+
+${refLink}
+
+Share it \u2014 every friend who joins and completes their first swap = *+${REFERRAL_CUT_REWARD} cuts* for you! \u{1F381}
+
+_(Max balance: ${MAX_CUT_BALANCE} cuts per account)_`,
+      { parse_mode: "Markdown" }
+    );
+  });
+  bot.action("check_status", async (ctx) => {
+    await ctx.answerCbQuery();
+    const user = await User.findOne({ telegramId: ctx.from.id });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("Belum register. /start dulu la bro!");
+      return;
+    }
+    const statusMap = {
+      idle: "\u{1F634} Idle",
+      awaiting_cut_link: "\u23F3 Tunggu link",
+      inqueue: "\u{1F50D} Cari partner...",
+      pending_ready: "\u{1F3AF} Partner found \u2014 confirm ready",
+      in_match: "\u{1F91D} In match",
+      awaiting_proof_account_selection: "\u{1F50D} Pilih akaun bukti",
+      awaiting_proof_cut_username: "\u270D\uFE0F Masukkan username",
+      awaiting_proof: "\u{1F4F8} Menunggu bukti",
+      awaiting_partner_approval: "\u23F3 Menunggu kelulusan partner",
+      awaiting_reject_reason: "\u270D\uFE0F Masukkan sebab tolak"
+    };
+    await ctx.reply(
+      `\u{1F4CA} *Status kau:*
+
+TikTok: @${user.tiktokUsername}
+Cut baki: ${user.cutBalance}
+Strikes: ${user.strikes}/3
+Status: ${statusMap[user.state] ?? user.state}`,
       { parse_mode: "Markdown" }
     );
   });
