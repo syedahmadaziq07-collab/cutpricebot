@@ -43256,6 +43256,36 @@ async function cleanupStaleQueue() {
     console.log(`  \u2192 telegramId=${q.telegramId} pendingLink=${q.pendingLink ? "SET" : "NULL"} createdAt=${q.createdAt.toISOString()}`);
   }
 }
+async function cleanupStalePendingReady(bot) {
+  const sixtySecondsAgo = new Date(Date.now() - 60 * 1e3);
+  const staleMatches = await Match.find({
+    status: "pending_ready",
+    createdAt: { $lte: sixtySecondsAgo }
+  });
+  if (staleMatches.length === 0) {
+    console.log("[STARTUP_CLEANUP] No stale pending_ready matches found.");
+    return;
+  }
+  console.log(`[STARTUP_CLEANUP] Found ${staleMatches.length} stale pending_ready match(es) older than 60s \u2014 cancelling with no punishment.`);
+  for (const match of staleMatches) {
+    await Match.updateOne({ _id: match._id }, { status: "cancelled" });
+    for (const uid of [match.user1Id, match.user2Id]) {
+      await User.updateOne(
+        { telegramId: uid },
+        { state: "awaiting_cut_link", activeMatchId: null, pendingLink: null, isWaiting: false, queuedAt: null }
+      );
+      await Queue.deleteOne({ telegramId: uid });
+      try {
+        await bot.telegram.sendMessage(
+          uid,
+          "\u23F0 Your previous match was reset due to a server restart. No cooldown applied \u2014 submit a new cut link to start again."
+        );
+      } catch {
+      }
+    }
+    console.log(`[STARTUP_CLEANUP] Cancelled stale pending_ready matchId=${match._id} \u2014 both users reset to awaiting_cut_link. No punishment.`);
+  }
+}
 var DAILY_CUT_FLOOR = 7;
 var REFERRAL_CUT_REWARD = 3;
 var MAX_CUT_BALANCE = 20;
@@ -43711,6 +43741,7 @@ TikTok username:
       failedCount++;
       console.error(`[CUSTOMER_BROADCAST_FAILED] telegramId=${u.telegramId} (@${u.tiktokUsername}): ${err.message}`);
     }
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const eligible = allUsers.length - skippedSelf - skippedBanned - skippedCooldown;
   console.log(`[CUSTOMER_BROADCAST_COMPLETED] sender=@${senderTikTok} triggerSource=${triggerSource} total=${allUsers.length} eligible=${eligible} sent=${sentCount} failed=${failedCount} skipped_self=${skippedSelf} skipped_banned=${skippedBanned} skipped_cooldown=${skippedCooldown}`);
@@ -45997,6 +46028,30 @@ Take a quick look below and make sure everything's valid \u{1F440}\u2728`,
       await ctx.reply("\u274C Video tidak diterima. Sila hantar screenshot sebagai bukti jika perlu.");
     }
   });
+  bot.on((0, import_filters.message)("sticker"), async (ctx) => {
+    const telegramId = ctx.from.id;
+    console.log(`[MSG] sticker from telegramId=${telegramId}`);
+    const user = await User.findOne({ telegramId });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("\u{1F44B} Please send your TikTok profile link to register first.\n\nExample:\nhttps://www.tiktok.com/@username");
+    }
+  });
+  bot.on((0, import_filters.message)("voice"), async (ctx) => {
+    const telegramId = ctx.from.id;
+    console.log(`[MSG] voice from telegramId=${telegramId}`);
+    const user = await User.findOne({ telegramId });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("\u{1F44B} Please send your TikTok profile link to register first.\n\nExample:\nhttps://www.tiktok.com/@username");
+    }
+  });
+  bot.on((0, import_filters.message)("animation"), async (ctx) => {
+    const telegramId = ctx.from.id;
+    console.log(`[MSG] animation from telegramId=${telegramId}`);
+    const user = await User.findOne({ telegramId });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("\u{1F44B} Please send your TikTok profile link to register first.\n\nExample:\nhttps://www.tiktok.com/@username");
+    }
+  });
   bot.on((0, import_filters.message)("text"), async (ctx) => {
     const telegramId = ctx.from.id;
     const text = ctx.message.text.trim();
@@ -46028,6 +46083,16 @@ Take a quick look below and make sure everything's valid \u{1F440}\u2728`,
     if (!user || user.tiktokUsername === "__pending__") {
       if (user?.state === "awaiting_tiktok_profile") {
         console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1e3);
+        if (user.updatedAt < thirtyMinutesAgo) {
+          console.log(`[REGISTRATION_STUCK_RESEND] telegramId=${telegramId} \u2014 stuck in awaiting_tiktok_profile for >30 min. Resending prompt.`);
+          await User.updateOne({ telegramId }, { state: "awaiting_tiktok_profile" });
+          await ctx.reply(
+            "\u{1F44B} Still waiting for your TikTok profile link!\n\nPlease send your TikTok username or profile link below:\n\nExamples:\n@yourusername\nhttps://www.tiktok.com/@yourusername"
+          );
+          await sendTutorialImage(bot, telegramId);
+          return;
+        }
         if (isTikTokCutLink(text)) {
           console.log(`[CUT_LINK_BLOCKED_DURING_REGISTRATION] telegramId=${telegramId} input="${text.slice(0, 100)}"`);
           await ctx.reply(
@@ -46104,6 +46169,16 @@ Sekarang hantar TikTok cut price link kau \u{1F447}`,
     }
     if (user.state === "awaiting_tiktok_profile") {
       console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
+      const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1e3);
+      if (user.updatedAt < thirtyMinutesAgo) {
+        console.log(`[REGISTRATION_STUCK_RESEND] telegramId=${telegramId} \u2014 stuck in awaiting_tiktok_profile for >30 min. Resending prompt.`);
+        await User.updateOne({ telegramId }, { state: "awaiting_tiktok_profile" });
+        await ctx.reply(
+          "\u{1F44B} Still waiting for your TikTok profile link!\n\nPlease send your TikTok username or profile link below:\n\nExamples:\n@yourusername\nhttps://www.tiktok.com/@yourusername"
+        );
+        await sendTutorialImage(bot, telegramId);
+        return;
+      }
       if (user.tiktokUsernameLocked && user.tiktokUsername && user.tiktokUsername !== "__pending__") {
         const rawAttempt = await extractTikTokUsername(text);
         const attempt = rawAttempt ? normalizeTikTokUsername(rawAttempt) : null;
@@ -47104,6 +47179,9 @@ async function main() {
   await cleanupStaleQueue();
   console.log("[STARTUP] Stale queue cleanup complete.");
   const bot = createBot();
+  console.log("[STARTUP] Cancelling stale pending_ready matches...");
+  await cleanupStalePendingReady(bot);
+  console.log("[STARTUP] Stale pending_ready cleanup complete.");
   scheduleDailyMidnightReset(bot);
   scheduleStuckCleanup(bot);
   scheduleQueueRetry(bot);

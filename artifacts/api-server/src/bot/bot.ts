@@ -152,6 +152,42 @@ export async function cleanupStaleQueue(): Promise<void> {
   }
 }
 
+// FIX 1: Cancel stale pending_ready matches on restart — called after bot is created.
+// Handles the timer-loss gap: in-memory readyTimers are wiped on restart, so matches
+// that never resolved stay pending_ready forever. No punishment for either user.
+export async function cleanupStalePendingReady(bot: Telegraf): Promise<void> {
+  const sixtySecondsAgo = new Date(Date.now() - 60 * 1000);
+  const staleMatches = await Match.find({
+    status: "pending_ready",
+    createdAt: { $lte: sixtySecondsAgo },
+  });
+
+  if (staleMatches.length === 0) {
+    console.log("[STARTUP_CLEANUP] No stale pending_ready matches found.");
+    return;
+  }
+
+  console.log(`[STARTUP_CLEANUP] Found ${staleMatches.length} stale pending_ready match(es) older than 60s — cancelling with no punishment.`);
+
+  for (const match of staleMatches) {
+    await Match.updateOne({ _id: match._id }, { status: "cancelled" });
+    for (const uid of [match.user1Id, match.user2Id]) {
+      await User.updateOne(
+        { telegramId: uid },
+        { state: "awaiting_cut_link", activeMatchId: null, pendingLink: null, isWaiting: false, queuedAt: null },
+      );
+      await Queue.deleteOne({ telegramId: uid });
+      try {
+        await bot.telegram.sendMessage(
+          uid,
+          "⏰ Your previous match was reset due to a server restart. No cooldown applied — submit a new cut link to start again.",
+        );
+      } catch { /* user may have blocked bot */ }
+    }
+    console.log(`[STARTUP_CLEANUP] Cancelled stale pending_ready matchId=${match._id} — both users reset to awaiting_cut_link. No punishment.`);
+  }
+}
+
 const DAILY_CUT_FLOOR = 7;
 const REFERRAL_CUT_REWARD = 3;
 const MAX_CUT_BALANCE = 20;
@@ -696,6 +732,8 @@ async function broadcastCutLinkNotification(
       failedCount++;
       console.error(`[CUSTOMER_BROADCAST_FAILED] telegramId=${u.telegramId} (@${u.tiktokUsername}): ${(err as Error).message}`);
     }
+    // FIX 3: 50ms delay between sends to respect Telegram rate limits (30 msg/s per bot)
+    await new Promise(resolve => setTimeout(resolve, 50));
   }
 
   const eligible = allUsers.length - skippedSelf - skippedBanned - skippedCooldown;
@@ -3109,6 +3147,34 @@ export function createBot(): Telegraf {
     }
   });
 
+  // FIX 2: Sticker / voice / animation handlers — guide unregistered users to register
+  bot.on(message("sticker"), async (ctx) => {
+    const telegramId = ctx.from.id;
+    console.log(`[MSG] sticker from telegramId=${telegramId}`);
+    const user = await User.findOne({ telegramId });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("👋 Please send your TikTok profile link to register first.\n\nExample:\nhttps://www.tiktok.com/@username");
+    }
+  });
+
+  bot.on(message("voice"), async (ctx) => {
+    const telegramId = ctx.from.id;
+    console.log(`[MSG] voice from telegramId=${telegramId}`);
+    const user = await User.findOne({ telegramId });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("👋 Please send your TikTok profile link to register first.\n\nExample:\nhttps://www.tiktok.com/@username");
+    }
+  });
+
+  bot.on(message("animation"), async (ctx) => {
+    const telegramId = ctx.from.id;
+    console.log(`[MSG] animation from telegramId=${telegramId}`);
+    const user = await User.findOne({ telegramId });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("👋 Please send your TikTok profile link to register first.\n\nExample:\nhttps://www.tiktok.com/@username");
+    }
+  });
+
   bot.on(message("text"), async (ctx) => {
     const telegramId = ctx.from.id;
     const text = ctx.message.text.trim();
@@ -3143,6 +3209,18 @@ export function createBot(): Telegraf {
     if (!user || user.tiktokUsername === "__pending__") {
       if (user?.state === "awaiting_tiktok_profile") {
         console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
+
+        // FIX 2: If stuck in awaiting_tiktok_profile for >30 min, resend the prompt as a reminder
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+        if (user.updatedAt < thirtyMinutesAgo) {
+          console.log(`[REGISTRATION_STUCK_RESEND] telegramId=${telegramId} — stuck in awaiting_tiktok_profile for >30 min. Resending prompt.`);
+          await User.updateOne({ telegramId }, { state: "awaiting_tiktok_profile" });
+          await ctx.reply(
+            "👋 Still waiting for your TikTok profile link!\n\nPlease send your TikTok username or profile link below:\n\nExamples:\n@yourusername\nhttps://www.tiktok.com/@yourusername",
+          );
+          await sendTutorialImage(bot, telegramId);
+          return;
+        }
 
         // Block cut/short links — they are not TikTok profile links
         if (isTikTokCutLink(text)) {
@@ -3215,6 +3293,18 @@ export function createBot(): Telegraf {
 
     if (user.state === "awaiting_tiktok_profile") {
       console.log(`[TIKTOK] Received profile link from telegramId=${telegramId}: ${text.slice(0, 100)}`);
+
+      // FIX 2: If stuck in awaiting_tiktok_profile for >30 min, resend the prompt as a reminder
+      const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+      if (user.updatedAt < thirtyMinutesAgo) {
+        console.log(`[REGISTRATION_STUCK_RESEND] telegramId=${telegramId} — stuck in awaiting_tiktok_profile for >30 min. Resending prompt.`);
+        await User.updateOne({ telegramId }, { state: "awaiting_tiktok_profile" });
+        await ctx.reply(
+          "👋 Still waiting for your TikTok profile link!\n\nPlease send your TikTok username or profile link below:\n\nExamples:\n@yourusername\nhttps://www.tiktok.com/@yourusername",
+        );
+        await sendTutorialImage(bot, telegramId);
+        return;
+      }
 
       // If this user already has a locked username, block any change attempt
       if (user.tiktokUsernameLocked && user.tiktokUsername && user.tiktokUsername !== "__pending__") {

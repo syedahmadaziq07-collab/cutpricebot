@@ -1,7 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { connectDB } from "./bot/db";
-import { createBot, cleanupStaleQueue, scheduleDailyMidnightReset, scheduleStuckCleanup, scheduleQueueRetry } from "./bot/bot";
+import { createBot, cleanupStaleQueue, cleanupStalePendingReady, scheduleDailyMidnightReset, scheduleStuckCleanup, scheduleQueueRetry } from "./bot/bot";
 
 const rawPort = process.env["PORT"];
 const port = rawPort ? Number(rawPort) : null;
@@ -18,6 +18,11 @@ async function main() {
   console.log("[STARTUP] Stale queue cleanup complete.");
 
   const bot = createBot();
+
+  console.log("[STARTUP] Cancelling stale pending_ready matches...");
+  await cleanupStalePendingReady(bot);
+  console.log("[STARTUP] Stale pending_ready cleanup complete.");
+
   scheduleDailyMidnightReset(bot);
   scheduleStuckCleanup(bot);
   scheduleQueueRetry(bot);
