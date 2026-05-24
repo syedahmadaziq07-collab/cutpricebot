@@ -46501,11 +46501,11 @@ Example:
     await ctx.reply("\u274C Cancelled. You can press \u2705 Done Cut again when you're ready.");
   });
   bot.action(/^ready_to_cut:(.+)$/, async (ctx) => {
-    await ctx.answerCbQuery();
+    await ctx.answerCbQuery("\u23F3 Processing...");
     const telegramId = ctx.from.id;
     const matchId = ctx.match[1];
     try {
-      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+      await ctx.editMessageText("\u23F3 Processing your request...");
     } catch {
     }
     const user = await User.findOne({ telegramId });
@@ -46615,11 +46615,11 @@ Now complete the cut and press \u2705 Done Cut.`,
     void startInactivityReminders(bot, matchId, match.user2Id, "in_match");
   });
   bot.action(/^cancel_ready:(.+)$/, async (ctx) => {
-    await ctx.answerCbQuery();
+    await ctx.answerCbQuery("\u23F3 Processing...");
     const telegramId = ctx.from.id;
     const matchId = ctx.match[1];
     try {
-      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+      await ctx.editMessageText("\u23F3 Processing your request...");
     } catch {
     }
     const user = await User.findOne({ telegramId });

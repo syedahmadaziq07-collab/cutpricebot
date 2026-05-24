@@ -3654,11 +3654,13 @@ export function createBot(): Telegraf {
 
   // ─── Ready To Cut callback ─────────────────────────────────────────────────
   bot.action(/^ready_to_cut:(.+)$/, async (ctx) => {
-    await ctx.answerCbQuery();
+    await ctx.answerCbQuery("⏳ Processing...");
     const telegramId = ctx.from!.id;
     const matchId = ctx.match[1];
 
-    try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch { /* already edited */ }
+    try {
+      await ctx.editMessageText("⏳ Processing your request...");
+    } catch { /* already edited */ }
 
     const user = await User.findOne({ telegramId });
     if (!user || user.state !== "pending_ready") {
@@ -3775,11 +3777,13 @@ export function createBot(): Telegraf {
 
   // ─── Cancel Ready callback (before link reveal — no punishment) ─────────────
   bot.action(/^cancel_ready:(.+)$/, async (ctx) => {
-    await ctx.answerCbQuery();
+    await ctx.answerCbQuery("⏳ Processing...");
     const telegramId = ctx.from!.id;
     const matchId = ctx.match[1];
 
-    try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch { /* already edited */ }
+    try {
+      await ctx.editMessageText("⏳ Processing your request...");
+    } catch { /* already edited */ }
 
     const user = await User.findOne({ telegramId });
     if (!user || user.state !== "pending_ready") {
