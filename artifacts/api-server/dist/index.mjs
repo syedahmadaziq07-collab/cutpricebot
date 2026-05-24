@@ -20494,11 +20494,11 @@ var require_router = __commonJS({
     var slice = Array.prototype.slice;
     var flatten = Array.prototype.flat;
     var methods = METHODS.map((method) => method.toLowerCase());
-    module.exports = Router3;
+    module.exports = Router4;
     module.exports.Route = Route;
-    function Router3(options) {
-      if (!(this instanceof Router3)) {
-        return new Router3(options);
+    function Router4(options) {
+      if (!(this instanceof Router4)) {
+        return new Router4(options);
       }
       const opts = options || {};
       function router3(req, res, next) {
@@ -20512,9 +20512,9 @@ var require_router = __commonJS({
       router3.stack = [];
       return router3;
     }
-    Router3.prototype = function() {
+    Router4.prototype = function() {
     };
-    Router3.prototype.param = function param(name, fn) {
+    Router4.prototype.param = function param(name, fn) {
       if (!name) {
         throw new TypeError("argument name is required");
       }
@@ -20534,7 +20534,7 @@ var require_router = __commonJS({
       params.push(fn);
       return this;
     };
-    Router3.prototype.handle = function handle(req, res, callback) {
+    Router4.prototype.handle = function handle(req, res, callback) {
       if (!callback) {
         throw new TypeError("argument callback is required");
       }
@@ -20661,7 +20661,7 @@ var require_router = __commonJS({
         }
       }
     };
-    Router3.prototype.use = function use(handler) {
+    Router4.prototype.use = function use(handler) {
       let offset = 0;
       let path = "/";
       if (typeof handler !== "function") {
@@ -20694,7 +20694,7 @@ var require_router = __commonJS({
       }
       return this;
     };
-    Router3.prototype.route = function route(path) {
+    Router4.prototype.route = function route(path) {
       const route2 = new Route(path);
       const layer = new Layer(path, {
         sensitive: this.caseSensitive,
@@ -20709,7 +20709,7 @@ var require_router = __commonJS({
       return route2;
     };
     methods.concat("all").forEach(function(method) {
-      Router3.prototype[method] = function(path) {
+      Router4.prototype[method] = function(path) {
         const route = this.route(path);
         route[method].apply(route, slice.call(arguments, 1));
         return this;
@@ -20892,7 +20892,7 @@ var require_application = __commonJS({
     var compileTrust = require_utils3().compileTrust;
     var resolve = __require("node:path").resolve;
     var once = require_once();
-    var Router3 = require_router();
+    var Router4 = require_router();
     var slice = Array.prototype.slice;
     var flatten = Array.prototype.flat;
     var app2 = exports = module.exports = {};
@@ -20908,7 +20908,7 @@ var require_application = __commonJS({
         enumerable: true,
         get: function getrouter() {
           if (router3 === null) {
-            router3 = new Router3({
+            router3 = new Router4({
               caseSensitive: this.enabled("case sensitive routing"),
               strict: this.enabled("strict routing")
             });
@@ -23565,7 +23565,7 @@ var require_express = __commonJS({
     var EventEmitter = __require("node:events").EventEmitter;
     var mixin = require_merge_descriptors();
     var proto = require_application();
-    var Router3 = require_router();
+    var Router4 = require_router();
     var req = require_request();
     var res = require_response();
     exports = module.exports = createApplication;
@@ -23587,8 +23587,8 @@ var require_express = __commonJS({
     exports.application = proto;
     exports.request = req;
     exports.response = res;
-    exports.Route = Router3.Route;
-    exports.Router = Router3;
+    exports.Route = Router4.Route;
+    exports.Router = Router4;
     exports.json = bodyParser.json;
     exports.raw = bodyParser.raw;
     exports.static = require_serve_static();
@@ -36763,7 +36763,7 @@ var require_router2 = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.Router = void 0;
     var composer_1 = __importDefault(require_composer());
-    var Router3 = class {
+    var Router4 = class {
       constructor(routeFn, handlers = /* @__PURE__ */ new Map()) {
         this.routeFn = routeFn;
         this.handlers = handlers;
@@ -36799,7 +36799,7 @@ var require_router2 = __commonJS({
         });
       }
     };
-    exports.Router = Router3;
+    exports.Router = Router4;
   }
 });
 
@@ -38969,12 +38969,12 @@ var require_node_cron = __commonJS({
 });
 
 // src/app.ts
-var import_express3 = __toESM(require_express2(), 1);
+var import_express4 = __toESM(require_express2(), 1);
 var import_cors = __toESM(require_lib3(), 1);
 var import_pino_http = __toESM(require_logger(), 1);
 
 // src/routes/index.ts
-var import_express2 = __toESM(require_express2(), 1);
+var import_express3 = __toESM(require_express2(), 1);
 
 // src/routes/health.ts
 var import_express = __toESM(require_express2(), 1);
@@ -42868,68 +42868,27 @@ router.get("/healthz", (_req, res) => {
 });
 var health_default = router;
 
-// src/routes/index.ts
-var router2 = (0, import_express2.Router)();
-router2.use(health_default);
-var routes_default = router2;
+// src/routes/admin.ts
+var import_express2 = __toESM(require_express2(), 1);
 
-// src/lib/logger.ts
-var import_pino = __toESM(require_pino(), 1);
-var logger = (0, import_pino.default)({
-  level: process.env.LOG_LEVEL ?? "info",
-  redact: [
-    "req.headers.authorization",
-    "req.headers.cookie",
-    "res.headers['set-cookie']"
-  ]
-});
-
-// src/app.ts
-var app = (0, import_express3.default)();
-app.use(
-  (0, import_pino_http.default)({
-    logger,
-    serializers: {
-      req(req) {
-        return {
-          id: req.id,
-          method: req.method,
-          url: req.url?.split("?")[0]
-        };
-      },
-      res(res) {
-        return {
-          statusCode: res.statusCode
-        };
-      }
-    }
-  })
-);
-app.use((0, import_cors.default)());
-app.use(import_express3.default.json());
-app.use(import_express3.default.urlencoded({ extended: true }));
-app.use("/api", routes_default);
-var app_default = app;
-
-// src/bot/db.ts
+// src/bot/models/queue.ts
 import mongoose from "mongoose";
-async function connectDB() {
-  const uri = process.env["MONGODB_URI"];
-  if (!uri) throw new Error("MONGODB_URI is required");
-  console.log("Connecting to MongoDB...");
-  await mongoose.connect(uri, { serverSelectionTimeoutMS: 1e4 });
-  console.log("MongoDB connected \u2705");
-  logger.info("MongoDB connected");
-}
-
-// src/bot/bot.ts
-var import_telegraf = __toESM(require_lib6(), 1);
-var import_filters = __toESM(require_filters2(), 1);
-var import_node_cron = __toESM(require_node_cron(), 1);
-import mongoose7 from "mongoose";
-import { createReadStream } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+var queueSchema = new mongoose.Schema({
+  telegramId: { type: Number, required: true, unique: true },
+  telegramUsername: { type: String, default: "" },
+  telegramName: { type: String, default: "" },
+  tiktokUsername: { type: String, default: "" },
+  pendingLink: { type: String, required: true },
+  status: {
+    type: String,
+    enum: ["waiting", "matched", "cancelled"],
+    default: "waiting",
+    index: true
+  },
+  createdAt: { type: Date, default: Date.now, index: true },
+  updatedAt: { type: Date, default: Date.now }
+});
+var Queue = mongoose.model("Queue", queueSchema);
 
 // src/bot/models/user.ts
 import mongoose2 from "mongoose";
@@ -42983,9 +42942,149 @@ userSchema.index({ activeMatchId: 1 });
 userSchema.index({ state: 1, isWaiting: 1, activeMatchId: 1, queuedAt: 1 });
 var User = mongoose2.model("User", userSchema);
 
-// src/bot/models/match.ts
+// src/routes/admin.ts
+var adminRouter = (0, import_express2.Router)();
+adminRouter.get("/admin/queue", async (_req, res) => {
+  try {
+    const entries = await Queue.find({
+      $or: [{ status: "waiting" }, { status: { $exists: false } }]
+    }).sort({ createdAt: 1 });
+    const enriched = await Promise.all(
+      entries.map(async (q) => {
+        let telegramUsername = q.telegramUsername ?? "";
+        let telegramName = q.telegramName ?? "";
+        let tiktokUsername = q.tiktokUsername ?? "";
+        if (!tiktokUsername) {
+          const user = await User.findOne({ telegramId: q.telegramId }).select(
+            "telegramUsername tiktokUsername"
+          );
+          if (user) {
+            telegramUsername = user.telegramUsername ?? "";
+            telegramName = user.telegramUsername ?? "";
+            tiktokUsername = user.tiktokUsername ?? "";
+          }
+        }
+        const waitingMs = Date.now() - new Date(q.createdAt).getTime();
+        const waitingMinutes = Math.round(waitingMs / 6e4);
+        return {
+          telegramId: q.telegramId,
+          telegramUsername: telegramUsername || `id:${q.telegramId}`,
+          telegramName: telegramName || telegramUsername || `id:${q.telegramId}`,
+          tiktokUsername: tiktokUsername || "unknown",
+          tiktokLink: q.pendingLink,
+          status: q.status || "waiting",
+          createdAt: q.createdAt,
+          updatedAt: q.updatedAt ?? q.createdAt,
+          waitingMinutes
+        };
+      })
+    );
+    console.log(
+      `[DASHBOARD_QUEUE_COUNT] GET /admin/queue \u2014 count=${enriched.length} returning ${enriched.length} waiting user(s)`
+    );
+    res.json({
+      count: enriched.length,
+      queue: enriched
+    });
+  } catch (err) {
+    console.error(`[DASHBOARD_QUEUE_ERROR] Failed to fetch queue: ${err.message}`);
+    res.status(500).json({ error: "Failed to fetch queue", details: err.message });
+  }
+});
+adminRouter.get("/admin/users", async (_req, res) => {
+  try {
+    const users = await User.find({}).select("telegramId telegramUsername tiktokUsername state cutBalance strikes isBanned suspendedUntil isWaiting queuedAt activeMatchId createdAt").sort({ createdAt: -1 }).limit(500);
+    res.json({
+      count: users.length,
+      users: users.map((u) => ({
+        telegramId: u.telegramId,
+        telegramUsername: u.telegramUsername || `id:${u.telegramId}`,
+        tiktokUsername: u.tiktokUsername,
+        state: u.state,
+        cutBalance: u.cutBalance,
+        strikes: u.strikes,
+        isBanned: u.isBanned,
+        suspendedUntil: u.suspendedUntil,
+        isWaiting: u.isWaiting,
+        queuedAt: u.queuedAt,
+        activeMatchId: u.activeMatchId,
+        createdAt: u.createdAt
+      }))
+    });
+  } catch (err) {
+    console.error(`[DASHBOARD_USERS_ERROR] Failed to fetch users: ${err.message}`);
+    res.status(500).json({ error: "Failed to fetch users", details: err.message });
+  }
+});
+var admin_default = adminRouter;
+
+// src/routes/index.ts
+var router2 = (0, import_express3.Router)();
+router2.use(health_default);
+router2.use(admin_default);
+var routes_default = router2;
+
+// src/lib/logger.ts
+var import_pino = __toESM(require_pino(), 1);
+var logger = (0, import_pino.default)({
+  level: process.env.LOG_LEVEL ?? "info",
+  redact: [
+    "req.headers.authorization",
+    "req.headers.cookie",
+    "res.headers['set-cookie']"
+  ]
+});
+
+// src/app.ts
+var app = (0, import_express4.default)();
+app.use(
+  (0, import_pino_http.default)({
+    logger,
+    serializers: {
+      req(req) {
+        return {
+          id: req.id,
+          method: req.method,
+          url: req.url?.split("?")[0]
+        };
+      },
+      res(res) {
+        return {
+          statusCode: res.statusCode
+        };
+      }
+    }
+  })
+);
+app.use((0, import_cors.default)());
+app.use(import_express4.default.json());
+app.use(import_express4.default.urlencoded({ extended: true }));
+app.use("/api", routes_default);
+var app_default = app;
+
+// src/bot/db.ts
 import mongoose3 from "mongoose";
-var matchSchema = new mongoose3.Schema(
+async function connectDB() {
+  const uri = process.env["MONGODB_URI"];
+  if (!uri) throw new Error("MONGODB_URI is required");
+  console.log("Connecting to MongoDB...");
+  await mongoose3.connect(uri, { serverSelectionTimeoutMS: 1e4 });
+  console.log("MongoDB connected \u2705");
+  logger.info("MongoDB connected");
+}
+
+// src/bot/bot.ts
+var import_telegraf = __toESM(require_lib6(), 1);
+var import_filters = __toESM(require_filters2(), 1);
+var import_node_cron = __toESM(require_node_cron(), 1);
+import mongoose7 from "mongoose";
+import { createReadStream } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+// src/bot/models/match.ts
+import mongoose4 from "mongoose";
+var matchSchema = new mongoose4.Schema(
   {
     user1Id: { type: Number, required: true },
     user2Id: { type: Number, required: true },
@@ -43019,11 +43118,11 @@ var matchSchema = new mongoose3.Schema(
   },
   { timestamps: true }
 );
-var Match = mongoose3.model("Match", matchSchema);
+var Match = mongoose4.model("Match", matchSchema);
 
 // src/bot/models/matchHistory.ts
-import mongoose4 from "mongoose";
-var matchHistorySchema = new mongoose4.Schema({
+import mongoose5 from "mongoose";
+var matchHistorySchema = new mongoose5.Schema({
   userIdA: { type: Number, required: true },
   userIdB: { type: Number, required: true },
   pairKey: { type: String, required: true },
@@ -43032,14 +43131,14 @@ var matchHistorySchema = new mongoose4.Schema({
 matchHistorySchema.index({ pairKey: 1, matchedAt: -1 });
 matchHistorySchema.index({ userIdA: 1, userIdB: 1, matchedAt: -1 });
 matchHistorySchema.index({ userIdB: 1, userIdA: 1, matchedAt: -1 });
-var MatchHistory = mongoose4.model(
+var MatchHistory = mongoose5.model(
   "MatchHistory",
   matchHistorySchema
 );
 
 // src/bot/models/referral.ts
-import mongoose5 from "mongoose";
-var referralSchema = new mongoose5.Schema(
+import mongoose6 from "mongoose";
+var referralSchema = new mongoose6.Schema(
   {
     referralCode: { type: String, required: true },
     referrerId: { type: Number, required: true },
@@ -43049,16 +43148,7 @@ var referralSchema = new mongoose5.Schema(
   },
   { timestamps: true }
 );
-var Referral = mongoose5.model("Referral", referralSchema);
-
-// src/bot/models/queue.ts
-import mongoose6 from "mongoose";
-var queueSchema = new mongoose6.Schema({
-  telegramId: { type: Number, required: true, unique: true },
-  pendingLink: { type: String, required: true },
-  createdAt: { type: Date, default: Date.now, index: true }
-});
-var Queue = mongoose6.model("Queue", queueSchema);
+var Referral = mongoose6.model("Referral", referralSchema);
 
 // src/bot/bot.ts
 var __filename2 = fileURLToPath(import.meta.url);
@@ -43101,13 +43191,39 @@ async function cleanupStaleQueue() {
   if (orphanResult.deletedCount > 0) {
     console.log(`[STARTUP_CLEANUP] Removed ${orphanResult.deletedCount} orphaned Queue entries (user no longer inqueue).`);
   }
-  const queuedUsers = await User.find({ state: "inqueue", pendingLink: { $nin: [null, ""] } }).select("telegramId pendingLink queuedAt");
+  const queuedUsers = await User.find({ state: "inqueue", pendingLink: { $nin: [null, ""] } }).select("telegramId pendingLink queuedAt telegramUsername tiktokUsername");
   for (const u of queuedUsers) {
     const exists = await Queue.findOne({ telegramId: u.telegramId });
     if (!exists) {
-      await Queue.create({ telegramId: u.telegramId, pendingLink: u.pendingLink, createdAt: u.queuedAt ?? /* @__PURE__ */ new Date() });
-      console.log(`[STARTUP_CLEANUP] Restored missing Queue entry for telegramId=${u.telegramId}.`);
+      await Queue.create({
+        telegramId: u.telegramId,
+        pendingLink: u.pendingLink,
+        telegramUsername: u.telegramUsername ?? "",
+        telegramName: u.telegramUsername ?? "",
+        tiktokUsername: u.tiktokUsername ?? "",
+        status: "waiting",
+        createdAt: u.queuedAt ?? /* @__PURE__ */ new Date(),
+        updatedAt: /* @__PURE__ */ new Date()
+      });
+      console.log(`[STARTUP_CLEANUP] Restored missing Queue entry for telegramId=${u.telegramId} tiktokUsername=@${u.tiktokUsername ?? "?"}.`);
     }
+  }
+  const legacyEntries = await Queue.find({ $or: [{ status: { $exists: false } }, { tiktokUsername: "" }, { tiktokUsername: { $exists: false } }] });
+  for (const entry of legacyEntries) {
+    const user = await User.findOne({ telegramId: entry.telegramId }).select("telegramUsername tiktokUsername");
+    await Queue.updateOne(
+      { _id: entry._id },
+      {
+        $set: {
+          status: "waiting",
+          telegramUsername: user?.telegramUsername ?? "",
+          telegramName: user?.telegramUsername ?? "",
+          tiktokUsername: user?.tiktokUsername ?? "",
+          updatedAt: /* @__PURE__ */ new Date()
+        }
+      }
+    );
+    console.log(`[STARTUP_CLEANUP] Migrated legacy Queue entry for telegramId=${entry.telegramId} \u2192 added status/user info.`);
   }
   const allRegistered = await User.find({ tiktokUsername: { $nin: ["__pending__", ""] } }).select("telegramId tiktokUsername createdAt").sort({ createdAt: 1 });
   const seenUsernames = /* @__PURE__ */ new Map();
@@ -43296,6 +43412,14 @@ function isTikTokProfileLink(input) {
   const trimmed = input.trim();
   if (/(?:https?:\/\/)?(?:www\.)?tiktok\.com\/@/i.test(trimmed)) return true;
   if (/^@[\w.]+$/i.test(trimmed)) return true;
+  return false;
+}
+function isAnyTikTokLink(input) {
+  const trimmed = input.trim();
+  if (/(?:https?:\/\/)?(?:www\.|vt\.)?tiktok\.com\//i.test(trimmed)) return true;
+  if (/https?:\/\/vm\.tiktok\.com\//i.test(trimmed)) return true;
+  if (isTikTokCutLink(trimmed)) return true;
+  if (isTikTokProfileLink(trimmed)) return true;
   return false;
 }
 async function checkAndApplyDailyReset(bot, telegramId) {
@@ -43718,7 +43842,10 @@ async function handleProofTimeout(bot, matchId, proofOwnerId, inactivePartnerId)
     }
   );
   const proofOwnerUser = await User.findOne({ telegramId: proofOwnerId }).select("cutBalance tiktokUsername");
-  await Queue.deleteOne({ telegramId: proofOwnerId });
+  const _proofOwnerQueueDel = await Queue.deleteOne({ telegramId: proofOwnerId });
+  if (_proofOwnerQueueDel.deletedCount > 0) {
+    console.log(`[QUEUE_RECORD_REMOVED] telegramId=${proofOwnerId} reason=proof_timeout_honest_owner`);
+  }
   await User.updateOne(
     { telegramId: proofOwnerId },
     { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null, proofCutByUsername: null }
@@ -43746,7 +43873,10 @@ If you want a new partner, please send a new cut link to start again \u{1F440}\u
     );
   } catch {
   }
-  await Queue.deleteOne({ telegramId: inactivePartnerId });
+  const _inactivePartnerQueueDel = await Queue.deleteOne({ telegramId: inactivePartnerId });
+  if (_inactivePartnerQueueDel.deletedCount > 0) {
+    console.log(`[QUEUE_RECORD_REMOVED] telegramId=${inactivePartnerId} reason=proof_timeout_inactive_partner`);
+  }
   await User.updateOne(
     { telegramId: inactivePartnerId },
     { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null, proofCutByUsername: null }
@@ -44034,7 +44164,12 @@ async function tryMatchAtomic(bot, currentTelegramId, pendingLink) {
       }
     }
   );
-  await Queue.deleteMany({ telegramId: { $in: [currentTelegramId, partner.telegramId] } });
+  const matchRemoveResult = await Queue.deleteMany({ telegramId: { $in: [currentTelegramId, partner.telegramId] } });
+  if (matchRemoveResult.deletedCount > 0) {
+    const remaining = await Queue.countDocuments({ status: "waiting" });
+    console.log(`[QUEUE_RECORD_REMOVED] matchId=${matchId} removed ${matchRemoveResult.deletedCount} Queue entry(ies) \u2014 users matched. reason=matched`);
+    console.log(`[DASHBOARD_QUEUE_COUNT] count=${remaining}`);
+  }
   const partnerPendingLink = partner.pendingLink ?? "";
   const expiresAt = new Date(now.getTime() + 20 * 60 * 1e3);
   const readyTimeoutAt = new Date(now.getTime() + READY_TIMEOUT_MS);
@@ -44153,21 +44288,36 @@ async function addToQueue(bot, telegramId, pendingLink) {
     console.log(`[DUPLICATE_QUEUE_ENTRY_REMOVED] telegramId=${telegramId} \u2014 removed stale queue entry (pendingLink="${existing.pendingLink ?? "null"}")`);
   }
   await Queue.deleteOne({ telegramId });
+  const userInfo = await User.findOne({ telegramId }).select("telegramUsername tiktokUsername");
+  const telegramUsername = userInfo?.telegramUsername ?? "";
+  const tiktokUsername = userInfo?.tiktokUsername ?? "";
   const queuedAt = /* @__PURE__ */ new Date();
-  await Queue.create({ telegramId, pendingLink, createdAt: queuedAt });
+  await Queue.create({
+    telegramId,
+    pendingLink,
+    telegramUsername,
+    telegramName: telegramUsername,
+    tiktokUsername,
+    status: "waiting",
+    createdAt: queuedAt,
+    updatedAt: queuedAt
+  });
   await User.updateOne({ telegramId }, { state: "inqueue", isWaiting: true, queuedAt, originalQueuedAt: queuedAt, pendingLink, activeMatchId: null });
-  const queueSize = await Queue.countDocuments();
-  console.log(`[USER_QUEUED] telegramId=${telegramId} entered queue. Queue size: ${queueSize}. Attempting immediate match...`);
+  const queueSize = await Queue.countDocuments({ status: "waiting" });
+  console.log(`[QUEUE_RECORD_CREATED] telegramId=${telegramId} tiktokUsername=@${tiktokUsername} telegramUsername=@${telegramUsername} tiktokLink="${pendingLink}" status=waiting`);
+  console.log(`[USER_QUEUED] telegramId=${telegramId} entered queue. Queue size (waiting): ${queueSize}. Attempting immediate match...`);
+  console.log(`[DASHBOARD_QUEUE_COUNT] count=${queueSize}`);
   const matched = await tryMatchAtomic(bot, telegramId, pendingLink);
   if (matched) {
     console.log(`[IMMEDIATE_QUEUE_MATCH] telegramId=${telegramId} \u2014 matched immediately after joining queue.`);
   } else {
-    const remaining = await Queue.countDocuments();
+    const remaining = await Queue.countDocuments({ status: "waiting" });
     console.log(`[QUEUE_WAITING] telegramId=${telegramId} \u2014 no partner yet. ${remaining} user(s) in queue. Waiting for next submission or scheduler.`);
+    console.log(`[DASHBOARD_QUEUE_COUNT] count=${remaining}`);
   }
 }
 async function requeueUser(bot, telegramId, pendingLink) {
-  const user = await User.findOne({ telegramId }).select("originalQueuedAt tiktokUsername");
+  const user = await User.findOne({ telegramId }).select("originalQueuedAt tiktokUsername telegramUsername");
   if (!user) return;
   const sus = await checkSuspension(telegramId);
   if (sus.suspended) {
@@ -44178,12 +44328,26 @@ async function requeueUser(bot, telegramId, pendingLink) {
   const originalQueuedAt = user.originalQueuedAt ?? null;
   const queuedAt = originalQueuedAt ?? /* @__PURE__ */ new Date();
   const restoredPriority = originalQueuedAt !== null;
+  const telegramUsername = user.telegramUsername ?? "";
+  const tiktokUsername = user.tiktokUsername ?? "";
   await Queue.deleteOne({ telegramId });
-  await Queue.create({ telegramId, pendingLink, createdAt: queuedAt });
+  await Queue.create({
+    telegramId,
+    pendingLink,
+    telegramUsername,
+    telegramName: telegramUsername,
+    tiktokUsername,
+    status: "waiting",
+    createdAt: queuedAt,
+    updatedAt: /* @__PURE__ */ new Date()
+  });
   await User.updateOne(
     { telegramId },
     { state: "inqueue", isWaiting: true, queuedAt, pendingLink, activeMatchId: null }
   );
+  const queueSize = await Queue.countDocuments({ status: "waiting" });
+  console.log(`[QUEUE_RECORD_CREATED] telegramId=${telegramId} tiktokUsername=@${tiktokUsername} (requeue) status=waiting`);
+  console.log(`[DASHBOARD_QUEUE_COUNT] count=${queueSize}`);
   if (restoredPriority) {
     console.log(`[ORIGINAL_QUEUE_PRIORITY_RESTORED] telegramId=${telegramId} (@${user.tiktokUsername}) requeued with original queuedAt=${queuedAt.toISOString()}`);
   }
@@ -45690,6 +45854,149 @@ Take a quick look below and make sure everything's valid \u{1F440}\u2728`,
     proofTimers.set(proofTimerKey, proofTimer);
     console.log(`[NO_RESPONSE_TIMEOUT_STARTED] matchId=${matchId} proofOwnerId=${telegramId} inactivePartnerId=${partnerId} \u2014 10-min timer started.`);
   });
+  bot.on((0, import_filters.message)("document"), async (ctx) => {
+    const telegramId = ctx.from.id;
+    const doc = ctx.message.document;
+    console.log(`[MSG] document from telegramId=${telegramId} mime=${doc.mime_type ?? "unknown"}`);
+    const sus = await checkSuspension(telegramId);
+    if (sus.suspended) {
+      if (sus.reason === "banned") {
+        console.log(`[BANNED_USER_BLOCKED_ACTION] telegramId=${telegramId} action=document`);
+      } else {
+        console.log(`[COOLDOWN_USER_BLOCKED_ACTION] telegramId=${telegramId} action=document`);
+      }
+      await ctx.reply(sus.message);
+      return;
+    }
+    await checkAndApplyDailyReset(bot, telegramId);
+    const user = await User.findOne({ telegramId });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("Kau belum register lagi. Taip /start dulu k!");
+      return;
+    }
+    const isImageDocument = (doc.mime_type ?? "").startsWith("image/");
+    if (!isImageDocument) {
+      console.log(`[NON_IMAGE_DOCUMENT_REJECTED] telegramId=${telegramId} mime=${doc.mime_type ?? "unknown"} state=${user.state}`);
+      await ctx.reply("\u274C Hanya gambar/screenshot sahaja diterima sebagai bukti.\n\nSila hantar screenshot, bukan fail lain.");
+      return;
+    }
+    if (user.state === "pending_ready") {
+      await ctx.reply("\u{1F449} Please press \u2705 Ready To Cut or \u274C Cancel Match using the buttons above first.");
+      return;
+    }
+    if (user.state === "in_match") {
+      await ctx.reply("Sila tekan butang *\u2705 Done Cut* dahulu sebelum menghantar bukti ya.", { parse_mode: "Markdown" });
+      return;
+    }
+    if (user.state === "awaiting_proof_account_selection") {
+      await ctx.reply("Sila pilih akaun TikTok yang anda gunakan dahulu \u{1F446}\u2728");
+      return;
+    }
+    if (user.state === "awaiting_proof_cut_username") {
+      await ctx.reply("Sila taip username TikTok yang anda gunakan dahulu \u270D\uFE0F");
+      return;
+    }
+    if (user.state === "awaiting_partner_approval") {
+      await ctx.reply("\u23F3 Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.");
+      return;
+    }
+    if (user.state !== "awaiting_proof") {
+      await ctx.reply("Oopsie \u{1F62D}\n\nThere's no active cut match to verify right now.");
+      return;
+    }
+    const match = await Match.findOne({
+      $or: [{ user1Id: telegramId }, { user2Id: telegramId }],
+      status: "active"
+    });
+    if (!match) {
+      await ctx.reply("Hmm takde match active la. Cuba /start balik k.");
+      return;
+    }
+    const isUser1 = match.user1Id === telegramId;
+    const partnerId = isUser1 ? match.user2Id : match.user1Id;
+    const matchId = match._id.toString();
+    const alreadySubmitted = isUser1 ? match.user1ProofSubmitted : match.user2ProofSubmitted;
+    if (alreadySubmitted) {
+      await ctx.reply("\u23F3 Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.");
+      return;
+    }
+    const proofMessageId = ctx.message.message_id.toString();
+    const proofFileId = doc.file_id;
+    const now = /* @__PURE__ */ new Date();
+    const freshUser = await User.findOne({ telegramId }).select("proofCutByUsername");
+    const proofCutByUsername = freshUser?.proofCutByUsername ?? null;
+    if (isUser1) {
+      await Match.updateOne({ _id: match._id }, {
+        user1ProofSubmitted: true,
+        user1ProofMessageId: proofMessageId,
+        user1ProofSubmittedAt: now,
+        user1Confirmed: true,
+        user1ProofCutByUsername: proofCutByUsername
+      });
+    } else {
+      await Match.updateOne({ _id: match._id }, {
+        user2ProofSubmitted: true,
+        user2ProofMessageId: proofMessageId,
+        user2ProofSubmittedAt: now,
+        user2Confirmed: true,
+        user2ProofCutByUsername: proofCutByUsername
+      });
+    }
+    console.log(`[PROOF_SUBMITTED_DOC] telegramId=${telegramId} submitted image document proof for matchId=${matchId} proofCutByUsername=${proofCutByUsername ?? "null"}.`);
+    await User.updateOne({ telegramId }, { state: "awaiting_partner_approval", proofCutByUsername: null });
+    await ctx.reply("\u2705 Proof received successfully!\n\nYour cut buddy is checking it now \u{1F440}\u2728");
+    stopInactivityReminders(matchId, telegramId);
+    const isUser1ForApproval = isUser1;
+    void startInactivityReminders(bot, matchId, partnerId, "awaiting_partner_approval", async (mid) => {
+      const m = await Match.findOne({ _id: mid, status: "active" });
+      if (!m) return false;
+      return isUser1ForApproval ? !m.user1ProofApprovedByPartner : !m.user2ProofApprovedByPartner;
+    });
+    const approveButtons = import_telegraf.Markup.inlineKeyboard([
+      import_telegraf.Markup.button.callback("\u2705 Approve Proof", `approve_proof:${matchId}:${telegramId}`),
+      import_telegraf.Markup.button.callback("\u274C Reject Proof", `reject_proof:${matchId}:${telegramId}`)
+    ]);
+    const proofAccountLine = proofCutByUsername ? `
+
+Cut done using TikTok account:
+@${proofCutByUsername}` : "";
+    await bot.telegram.sendDocument(partnerId, proofFileId, {
+      caption: `\u{1F4F8} Your cut buddy just sent their proof!${proofAccountLine}
+
+Take a quick look below and make sure everything's valid \u{1F440}\u2728`,
+      parse_mode: "Markdown",
+      ...approveButtons
+    });
+    console.log(`[PROOF_SENT_TO_PARTNER_DOC] telegramId=${telegramId} image doc proof forwarded to partnerId=${partnerId} for matchId=${matchId}.`);
+    const proofTimerKey = `proof:${matchId}:${telegramId}`;
+    if (proofTimers.has(proofTimerKey)) clearTimeout(proofTimers.get(proofTimerKey));
+    const proofTimer = setTimeout(async () => {
+      proofTimers.delete(proofTimerKey);
+      await handleProofTimeout(bot, matchId, telegramId, partnerId);
+    }, NO_RESPONSE_TIMEOUT_MS);
+    proofTimers.set(proofTimerKey, proofTimer);
+    console.log(`[NO_RESPONSE_TIMEOUT_STARTED] matchId=${matchId} proofOwnerId=${telegramId} inactivePartnerId=${partnerId} \u2014 10-min timer started (doc proof).`);
+  });
+  bot.on((0, import_filters.message)("video"), async (ctx) => {
+    const telegramId = ctx.from.id;
+    console.log(`[MSG] video from telegramId=${telegramId}`);
+    const sus = await checkSuspension(telegramId);
+    if (sus.suspended) {
+      await ctx.reply(sus.message);
+      return;
+    }
+    const user = await User.findOne({ telegramId });
+    if (!user || user.tiktokUsername === "__pending__") {
+      await ctx.reply("Kau belum register lagi. Taip /start dulu k!");
+      return;
+    }
+    if (user.state === "awaiting_proof") {
+      console.log(`[VIDEO_AS_PROOF_REJECTED] telegramId=${telegramId} \u2014 video sent instead of proof screenshot`);
+      await ctx.reply("\u26A0\uFE0F Sila hantar screenshot bukti cut, bukan video.");
+    } else {
+      await ctx.reply("\u274C Video tidak diterima. Sila hantar screenshot sebagai bukti jika perlu.");
+    }
+  });
   bot.on((0, import_filters.message)("text"), async (ctx) => {
     const telegramId = ctx.from.id;
     const text = ctx.message.text.trim();
@@ -45988,7 +46295,11 @@ ${refLink}`,
       }
     }
     if (user.state === "inqueue") {
-      await ctx.reply("Still finding your cut buddy \u{1F512}\u2728\n\nHang tight for a few more seconds \u{1F440}");
+      if (isAnyTikTokLink(text)) {
+        await ctx.reply("\u26A0\uFE0F Kau sudah dalam queue. Link TikTok tidak diterima sekarang.\n\nTunggu je ya, sedang mencari partner \u{1F512}\u2728");
+      } else {
+        await ctx.reply("Still finding your cut buddy \u{1F512}\u2728\n\nHang tight for a few more seconds \u{1F440}");
+      }
       return;
     }
     if (user.state === "awaiting_reject_reason") {
@@ -46010,6 +46321,11 @@ ${refLink}`,
     }
     if (user.state === "awaiting_proof_cut_username") {
       const rawInput = text.trim();
+      if (isAnyTikTokLink(rawInput)) {
+        console.log(`[PROOF_ACCOUNT_TIKTOK_LINK_REJECTED] telegramId=${telegramId} \u2014 TikTok link sent instead of username: "${rawInput}"`);
+        await ctx.reply("\u26A0\uFE0F Sila taip username TikTok sahaja, bukan link TikTok.\n\nContoh:\n@yourusername");
+        return;
+      }
       const normalizedUsername = rawInput.replace(/^@/, "").toLowerCase().trim();
       if (!normalizedUsername || !/^[\w.]+$/.test(normalizedUsername)) {
         console.log(`[PROOF_ACCOUNT_INVALID] telegramId=${telegramId} \u2014 invalid username input: "${rawInput}"`);
@@ -46047,19 +46363,37 @@ Example:
       return;
     }
     if (user.state === "pending_ready") {
-      await ctx.reply("\u{1F449} Please press \u2705 Ready To Cut or \u274C Cancel Match using the buttons above.");
+      if (isAnyTikTokLink(text)) {
+        await ctx.reply("\u26A0\uFE0F Link TikTok tidak diterima sekarang.\n\nSila tekan \u2705 Ready To Cut atau \u274C Cancel Match menggunakan butang di atas.");
+      } else {
+        await ctx.reply("\u{1F449} Please press \u2705 Ready To Cut or \u274C Cancel Match using the buttons above.");
+      }
       return;
     }
     if (user.state === "in_match") {
-      await ctx.reply("Sila tekan butang *\u2705 Done Cut* apabila anda selesai cut link partner.", { parse_mode: "Markdown" });
+      if (isAnyTikTokLink(text)) {
+        console.log(`[TIKTOK_LINK_DURING_MATCH_REJECTED] telegramId=${telegramId} \u2014 TikTok link sent while in_match: "${text.slice(0, 100)}"`);
+        await ctx.reply("\u26A0\uFE0F Link TikTok tidak diterima sebagai bukti.\n\nSila tekan butang *\u2705 Done Cut* apabila anda selesai cut link partner, kemudian hantar screenshot.", { parse_mode: "Markdown" });
+      } else {
+        await ctx.reply("Sila tekan butang *\u2705 Done Cut* apabila anda selesai cut link partner.", { parse_mode: "Markdown" });
+      }
       return;
     }
     if (user.state === "awaiting_proof") {
-      await ctx.reply("Sila hantar *screenshot* sebagai bukti anda telah cut link partner. \u{1F4F8}", { parse_mode: "Markdown" });
+      if (isAnyTikTokLink(text)) {
+        console.log(`[TIKTOK_LINK_AS_PROOF_REJECTED] telegramId=${telegramId} \u2014 TikTok link sent instead of proof screenshot: "${text.slice(0, 100)}"`);
+        await ctx.reply("\u26A0\uFE0F Sila hantar screenshot bukti cut, bukan link TikTok.");
+      } else {
+        await ctx.reply("Sila hantar *screenshot* sebagai bukti anda telah cut link partner. \u{1F4F8}", { parse_mode: "Markdown" });
+      }
       return;
     }
     if (user.state === "awaiting_partner_approval") {
-      await ctx.reply("\u23F3 Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.");
+      if (isAnyTikTokLink(text)) {
+        await ctx.reply("\u26A0\uFE0F Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve dahulu.\n\nLink TikTok tidak diterima.");
+      } else {
+        await ctx.reply("\u23F3 Bukti anda sudah dihantar. Sila tunggu partner anda semak dan approve terlebih dahulu.");
+      }
       return;
     }
     await ctx.reply("Taip /start untuk mula atau /status untuk semak status anda.");

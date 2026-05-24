@@ -72,13 +72,41 @@ export async function cleanupStaleQueue(): Promise<void> {
 
   // Add Queue entries for inqueue users who are missing from Queue collection
   const queuedUsers = await User.find({ state: "inqueue", pendingLink: { $nin: [null, ""] } })
-    .select("telegramId pendingLink queuedAt");
+    .select("telegramId pendingLink queuedAt telegramUsername tiktokUsername");
   for (const u of queuedUsers) {
     const exists = await Queue.findOne({ telegramId: u.telegramId });
     if (!exists) {
-      await Queue.create({ telegramId: u.telegramId, pendingLink: u.pendingLink!, createdAt: u.queuedAt ?? new Date() });
-      console.log(`[STARTUP_CLEANUP] Restored missing Queue entry for telegramId=${u.telegramId}.`);
+      await Queue.create({
+        telegramId: u.telegramId,
+        pendingLink: u.pendingLink!,
+        telegramUsername: u.telegramUsername ?? "",
+        telegramName: u.telegramUsername ?? "",
+        tiktokUsername: u.tiktokUsername ?? "",
+        status: "waiting",
+        createdAt: u.queuedAt ?? new Date(),
+        updatedAt: new Date(),
+      });
+      console.log(`[STARTUP_CLEANUP] Restored missing Queue entry for telegramId=${u.telegramId} tiktokUsername=@${u.tiktokUsername ?? "?"}.`);
     }
+  }
+
+  // MIGRATION: enrich legacy Queue entries that are missing status/user info
+  const legacyEntries = await Queue.find({ $or: [{ status: { $exists: false } }, { tiktokUsername: "" }, { tiktokUsername: { $exists: false } }] });
+  for (const entry of legacyEntries) {
+    const user = await User.findOne({ telegramId: entry.telegramId }).select("telegramUsername tiktokUsername");
+    await Queue.updateOne(
+      { _id: entry._id },
+      {
+        $set: {
+          status: "waiting",
+          telegramUsername: user?.telegramUsername ?? "",
+          telegramName: user?.telegramUsername ?? "",
+          tiktokUsername: user?.tiktokUsername ?? "",
+          updatedAt: new Date(),
+        },
+      },
+    );
+    console.log(`[STARTUP_CLEANUP] Migrated legacy Queue entry for telegramId=${entry.telegramId} → added status/user info.`);
   }
 
   // Duplicate TikTok username cleanup — keep oldest owner, reset all newer duplicates
@@ -841,7 +869,10 @@ async function handleProofTimeout(
 
   // Clean reset for honest proof owner — NO auto-requeue; manual new link required
   const proofOwnerUser = await User.findOne({ telegramId: proofOwnerId }).select("cutBalance tiktokUsername");
-  await Queue.deleteOne({ telegramId: proofOwnerId });
+  const _proofOwnerQueueDel = await Queue.deleteOne({ telegramId: proofOwnerId });
+  if (_proofOwnerQueueDel.deletedCount > 0) {
+    console.log(`[QUEUE_RECORD_REMOVED] telegramId=${proofOwnerId} reason=proof_timeout_honest_owner`);
+  }
   await User.updateOne(
     { telegramId: proofOwnerId },
     { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null, proofCutByUsername: null },
@@ -861,7 +892,10 @@ async function handleProofTimeout(
   } catch { /* user may have blocked bot */ }
 
   // Reset inactive partner state then issue strike (punishment unchanged)
-  await Queue.deleteOne({ telegramId: inactivePartnerId });
+  const _inactivePartnerQueueDel = await Queue.deleteOne({ telegramId: inactivePartnerId });
+  if (_inactivePartnerQueueDel.deletedCount > 0) {
+    console.log(`[QUEUE_RECORD_REMOVED] telegramId=${inactivePartnerId} reason=proof_timeout_inactive_partner`);
+  }
   await User.updateOne(
     { telegramId: inactivePartnerId },
     { state: "awaiting_cut_link", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null, proofCutByUsername: null },
@@ -1189,7 +1223,12 @@ async function tryMatchAtomic(bot: Telegraf, currentTelegramId: number, pendingL
   );
 
   // Remove both from Queue (partner may have a Queue entry; current user has not been queued yet)
-  await Queue.deleteMany({ telegramId: { $in: [currentTelegramId, partner.telegramId] } });
+  const matchRemoveResult = await Queue.deleteMany({ telegramId: { $in: [currentTelegramId, partner.telegramId] } });
+  if (matchRemoveResult.deletedCount > 0) {
+    const remaining = await Queue.countDocuments({ status: "waiting" });
+    console.log(`[QUEUE_RECORD_REMOVED] matchId=${matchId} removed ${matchRemoveResult.deletedCount} Queue entry(ies) — users matched. reason=matched`);
+    console.log(`[DASHBOARD_QUEUE_COUNT] count=${remaining}`);
+  }
 
   const partnerPendingLink = partner.pendingLink ?? "";
   // expiresAt is set relative to when links are revealed; we store a generous window here
@@ -1329,12 +1368,29 @@ async function addToQueue(bot: Telegraf, telegramId: number, pendingLink: string
     console.log(`[DUPLICATE_QUEUE_ENTRY_REMOVED] telegramId=${telegramId} — removed stale queue entry (pendingLink="${existing.pendingLink ?? "null"}")`);
   }
   await Queue.deleteOne({ telegramId });
+
+  // Fetch user info to enrich the queue record for the admin dashboard
+  const userInfo = await User.findOne({ telegramId }).select("telegramUsername tiktokUsername");
+  const telegramUsername = userInfo?.telegramUsername ?? "";
+  const tiktokUsername = userInfo?.tiktokUsername ?? "";
+
   const queuedAt = new Date();
-  await Queue.create({ telegramId, pendingLink, createdAt: queuedAt });
+  await Queue.create({
+    telegramId,
+    pendingLink,
+    telegramUsername,
+    telegramName: telegramUsername,
+    tiktokUsername,
+    status: "waiting",
+    createdAt: queuedAt,
+    updatedAt: queuedAt,
+  });
   await User.updateOne({ telegramId }, { state: "inqueue", isWaiting: true, queuedAt, originalQueuedAt: queuedAt, pendingLink, activeMatchId: null });
 
-  const queueSize = await Queue.countDocuments();
-  console.log(`[USER_QUEUED] telegramId=${telegramId} entered queue. Queue size: ${queueSize}. Attempting immediate match...`);
+  const queueSize = await Queue.countDocuments({ status: "waiting" });
+  console.log(`[QUEUE_RECORD_CREATED] telegramId=${telegramId} tiktokUsername=@${tiktokUsername} telegramUsername=@${telegramUsername} tiktokLink="${pendingLink}" status=waiting`);
+  console.log(`[USER_QUEUED] telegramId=${telegramId} entered queue. Queue size (waiting): ${queueSize}. Attempting immediate match...`);
+  console.log(`[DASHBOARD_QUEUE_COUNT] count=${queueSize}`);
 
   // Immediately attempt to match — catches the case where another user entered the queue
   // between this user's initial tryMatchAtomic call and now (the race-condition window).
@@ -1342,15 +1398,16 @@ async function addToQueue(bot: Telegraf, telegramId: number, pendingLink: string
   if (matched) {
     console.log(`[IMMEDIATE_QUEUE_MATCH] telegramId=${telegramId} — matched immediately after joining queue.`);
   } else {
-    const remaining = await Queue.countDocuments();
+    const remaining = await Queue.countDocuments({ status: "waiting" });
     console.log(`[QUEUE_WAITING] telegramId=${telegramId} — no partner yet. ${remaining} user(s) in queue. Waiting for next submission or scheduler.`);
+    console.log(`[DASHBOARD_QUEUE_COUNT] count=${remaining}`);
   }
 }
 
 // Requeue an innocent/remaining user after a match failure.
 // Restores their original FIFO priority if available, then immediately attempts a new atomic match.
 async function requeueUser(bot: Telegraf, telegramId: number, pendingLink: string): Promise<void> {
-  const user = await User.findOne({ telegramId }).select("originalQueuedAt tiktokUsername");
+  const user = await User.findOne({ telegramId }).select("originalQueuedAt tiktokUsername telegramUsername");
   if (!user) return;
 
   // Never requeue banned or cooldown users
@@ -1364,14 +1421,29 @@ async function requeueUser(bot: Telegraf, telegramId: number, pendingLink: strin
   const originalQueuedAt = user.originalQueuedAt ?? null;
   const queuedAt = originalQueuedAt ?? new Date();
   const restoredPriority = originalQueuedAt !== null;
+  const telegramUsername = user.telegramUsername ?? "";
+  const tiktokUsername = user.tiktokUsername ?? "";
 
   // Re-insert into Queue with the original createdAt to preserve FIFO position
   await Queue.deleteOne({ telegramId });
-  await Queue.create({ telegramId, pendingLink, createdAt: queuedAt });
+  await Queue.create({
+    telegramId,
+    pendingLink,
+    telegramUsername,
+    telegramName: telegramUsername,
+    tiktokUsername,
+    status: "waiting",
+    createdAt: queuedAt,
+    updatedAt: new Date(),
+  });
   await User.updateOne(
     { telegramId },
     { state: "inqueue", isWaiting: true, queuedAt, pendingLink, activeMatchId: null },
   );
+
+  const queueSize = await Queue.countDocuments({ status: "waiting" });
+  console.log(`[QUEUE_RECORD_CREATED] telegramId=${telegramId} tiktokUsername=@${tiktokUsername} (requeue) status=waiting`);
+  console.log(`[DASHBOARD_QUEUE_COUNT] count=${queueSize}`);
 
   if (restoredPriority) {
     console.log(`[ORIGINAL_QUEUE_PRIORITY_RESTORED] telegramId=${telegramId} (@${user.tiktokUsername}) requeued with original queuedAt=${queuedAt.toISOString()}`);
