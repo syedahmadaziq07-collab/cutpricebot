@@ -992,15 +992,19 @@ async function handleMatchExpiry(
   ]);
   let expiryResponsible: number | "both" | null = null;
   let expiryReason = "Match timer expired — 10-minute match window elapsed with no action.";
+  let expiryPunishmentApplied = false;
   if (u1state?.state === "in_match" && u2state?.state === "in_match") {
     expiryResponsible = "both";
-    expiryReason = "Both users inactive — neither pressed Done Cut within the 10-minute window.";
+    expiryReason = "Both users failed to complete confirmed match — both pressed Ready To Cut (links revealed) but neither pressed Done Cut within the 10-minute window.";
+    expiryPunishmentApplied = true;
   } else if (u1state?.state === "in_match" && u2state?.state !== "in_match") {
     expiryResponsible = user1Id;
-    expiryReason = "Did not press Done Cut — 10-minute match window elapsed while user had not acted.";
+    expiryReason = "Failed to complete confirmed match — user pressed Ready To Cut (links revealed) but did not press Done Cut within the 10-minute window.";
+    expiryPunishmentApplied = true;
   } else if (u2state?.state === "in_match" && u1state?.state !== "in_match") {
     expiryResponsible = user2Id;
-    expiryReason = "Did not press Done Cut — 10-minute match window elapsed while user had not acted.";
+    expiryReason = "Failed to complete confirmed match — user pressed Ready To Cut (links revealed) but did not press Done Cut within the 10-minute window.";
+    expiryPunishmentApplied = true;
   } else if (u1state?.state === "awaiting_proof_account_selection") {
     expiryResponsible = user1Id;
     expiryReason = "User did not choose TikTok account — 10-minute match window elapsed.";
@@ -1028,16 +1032,20 @@ async function handleMatchExpiry(
       responsibleId: expiryResponsible,
       user1Status: matchStateToStatus(u1state?.state),
       user2Status: matchStateToStatus(u2state?.state),
-      systemActions: ["Match cancelled", "No cooldown applied", "No strike issued"],
+      systemActions: expiryPunishmentApplied
+        ? ["Match cancelled", "24h cooldown applied to guilty user(s)", "Strike issued to guilty user(s)", "Innocent partner re-queued with previous link"]
+        : ["Match cancelled", "No cooldown applied", "No strike issued"],
     },
   );
 
   const activeStates = ["in_match", "awaiting_proof_account_selection", "awaiting_proof_cut_username", "awaiting_proof", "awaiting_partner_approval", "awaiting_reject_reason"];
+  const expiryNow = new Date();
 
   for (const uid of [user1Id, user2Id]) {
     const user = await User.findOne({ telegramId: uid });
     if (!user) continue;
     if (!activeStates.includes(user.state)) continue;
+
     // Clear any pending proof timer and reminder for this user in this match
     const proofTimerKey = `proof:${matchId}:${uid}`;
     const existingProofTimer = proofTimers.get(proofTimerKey);
@@ -1047,20 +1055,64 @@ async function handleMatchExpiry(
     if (existingReminder) { clearTimeout(existingReminder); proofReminderTimers.delete(reminderKey); }
     await Queue.deleteOne({ telegramId: uid });
     console.log(`[QUEUE_REMOVE] telegramId=${uid} removed from queue (match expired).`);
-    // Clean reset — NO auto-requeue; user must manually submit a new cut link
-    await User.updateOne({ telegramId: uid }, { state: "awaiting_cut_link", pendingLink: null, isWaiting: false, queuedAt: null, activeMatchId: null, proofCutByUsername: null });
-    console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${uid} path=match_expiry`);
-    console.log(`[AUTO_REMATCH_BLOCKED] matchId=${matchId} telegramId=${uid} — NOT auto-requeued after match expiry.`);
-    console.log(`[USER_MANUAL_REMATCH_REQUIRED] telegramId=${uid} — must submit new cut link to rejoin queue.`);
-    const remainingCuts = Math.max(0, user.cutBalance ?? 0);
-    try {
-      await bot.telegram.sendMessage(
-        uid,
-        `❌ This match has expired due to inactivity.\n\nYou are NOT currently in queue.\n\nIf you want a new partner, please send a new cut link to start again 👀✨\n\n🎟 Remaining cuts: ${remainingCuts}`,
-      );
-    } catch { /* user may have blocked bot */ }
+
+    if (user.state === "in_match") {
+      // Guilty: confirmed Ready To Cut (links revealed) but failed to press Done Cut — apply punishment
+      console.log(`[CONFIRMED_MATCH_FAILED] telegramId=${uid} matchId=${matchId} — user pressed Ready To Cut but failed to complete match within 10-minute window. Punishment applied.`);
+
+      const lastStrikeAt = user.lastStrikeAt;
+      const reoffendingWithin24h = lastStrikeAt && (expiryNow.getTime() - lastStrikeAt.getTime()) < COOLDOWN_MS;
+      const baseStrikes = reoffendingWithin24h ? user.strikes : 0;
+      const newStrikes = baseStrikes + 1;
+
+      if (newStrikes >= 3) {
+        await User.updateOne(
+          { telegramId: uid },
+          { strikes: newStrikes, lastStrikeAt: expiryNow, isBanned: true, state: "idle", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null, proofCutByUsername: null },
+        );
+        console.log(`[PUNISHMENT_APPLIED] telegramId=${uid} matchId=${matchId} — permanently banned after strike ${newStrikes} (failed to complete confirmed match).`);
+        try {
+          await bot.telegram.sendMessage(
+            uid,
+            "🚫 Strike 3! Kau dah kena *permanent ban*.\nPunca: Mengesahkan Ready To Cut tetapi gagal menyelesaikan match.\n\nTa-ta! 👋",
+            { parse_mode: "Markdown" },
+          );
+        } catch { /* user may have blocked bot */ }
+      } else {
+        const cooldownUntil = new Date(expiryNow.getTime() + COOLDOWN_MS);
+        await User.updateOne(
+          { telegramId: uid },
+          { strikes: newStrikes, lastStrikeAt: expiryNow, suspendedUntil: cooldownUntil, state: "idle", isWaiting: false, queuedAt: null, pendingLink: null, activeMatchId: null, proofCutByUsername: null },
+        );
+        console.log(`[PUNISHMENT_APPLIED] telegramId=${uid} matchId=${matchId} — 24h cooldown applied, strike ${newStrikes}/3 (failed to complete confirmed match).`);
+        try {
+          await bot.telegram.sendMessage(
+            uid,
+            `⚠️ Strike ${newStrikes}/3!\n\nKamu telah mengesahkan ✅ Ready To Cut tetapi gagal menekan ✅ Done Cut dalam masa 10 minit.\n\n🚫 24 jam cooldown dimulakan.\n\nJangan ghost partner lagi k! 😤`,
+            { parse_mode: "Markdown" },
+          );
+        } catch { /* user may have blocked bot */ }
+      }
+    } else {
+      // Innocent: user progressed beyond in_match (pressed Done Cut) — requeue with previous link
+      const userLink = user.pendingLink ?? (uid === user1Id ? match.link1 : match.link2);
+      console.log(`[MATCH_STATE_FULLY_CLEARED] telegramId=${uid} path=match_expiry_innocent`);
+      if (userLink) {
+        console.log(`[INNOCENT_PARTNER_REQUEUED] telegramId=${uid} matchId=${matchId} — re-queued with previous link after partner failed to complete confirmed match.`);
+        await requeueUser(bot, uid, userLink);
+      } else {
+        await User.updateOne({ telegramId: uid }, { state: "awaiting_cut_link", pendingLink: null, isWaiting: false, queuedAt: null, activeMatchId: null, proofCutByUsername: null });
+        console.log(`[INNOCENT_PARTNER_RESET] telegramId=${uid} matchId=${matchId} — no pending link found, reset to awaiting_cut_link.`);
+        try {
+          await bot.telegram.sendMessage(
+            uid,
+            `❌ Match expired — your partner failed to complete the match.\n\nYou are NOT currently in queue.\n\nIf you want a new partner, please send a new cut link to start again 👀✨`,
+          );
+        } catch { /* user may have blocked bot */ }
+      }
+    }
   }
-  console.log(`[MATCH_FULLY_TERMINATED] matchId=${matchId} — match expired, both users reset, no auto-rematch.`);
+  console.log(`[MATCH_FULLY_TERMINATED] matchId=${matchId} — match expired, punishment applied to guilty user(s), innocent partner re-queued.`);
   matchTimers.delete(matchId);
   stopInactivityReminders(matchId, user1Id);
   stopInactivityReminders(matchId, user2Id);
@@ -1071,7 +1123,7 @@ async function handleMatchExpiry(
 function matchStateToStatus(state: string | undefined | null): string {
   switch (state) {
     case "pending_ready":                    return "⏳ Waiting for Ready Confirmation";
-    case "in_match":                         return "❌ Did Not Press Done Cut";
+    case "in_match":                         return "❌ Failed To Complete Confirmed Match";
     case "awaiting_proof_account_selection": return "❌ Did Not Choose TikTok Account";
     case "awaiting_proof_cut_username":      return "❌ Did Not Enter TikTok Username";
     case "awaiting_proof":                   return "❌ Did Not Upload Screenshot";
@@ -4100,19 +4152,39 @@ export function createBot(): Telegraf {
     stopInactivityReminders(timerId, telegramId);
     stopInactivityReminders(timerId, partnerId);
 
-    const cooldownUntil = new Date(Date.now() + COOLDOWN_MS);
-    await User.updateOne(
-      { telegramId },
-      { state: "idle", isWaiting: false, queuedAt: null, cancelCooldownUntil: cooldownUntil, pendingLink: null, activeMatchId: null },
-    );
+    const cancelNow = new Date();
+    const cooldownUntil = new Date(cancelNow.getTime() + COOLDOWN_MS);
 
-    console.log(`[MATCH_CANCELLED] telegramId=${telegramId} (@${user.tiktokUsername}) cancelled the match.`);
-    console.log(`[USER_COOLDOWN] telegramId=${telegramId} on cooldown until ${cooldownUntil.toISOString()}.`);
+    // Strike logic — cancelling after link reveal = confirmed match abandoned
+    console.log(`[CONFIRMED_MATCH_CANCELLED] telegramId=${telegramId} matchId=${match._id.toString()} — user pressed Cancel Match after links were revealed.`);
+    const cancelLastStrikeAt = user.lastStrikeAt;
+    const cancelReoffending = cancelLastStrikeAt && (cancelNow.getTime() - cancelLastStrikeAt.getTime()) < COOLDOWN_MS;
+    const cancelBaseStrikes = cancelReoffending ? user.strikes : 0;
+    const cancelNewStrikes = cancelBaseStrikes + 1;
 
-    await ctx.reply(
-      "❌ *Match dibatalkan.*\n\nAkaun anda dalam cooldown selama 24 jam sebelum boleh menggunakan sistem semula.",
-      { parse_mode: "Markdown" },
-    );
+    if (cancelNewStrikes >= 3) {
+      await User.updateOne(
+        { telegramId },
+        { state: "idle", isWaiting: false, queuedAt: null, isBanned: true, strikes: cancelNewStrikes, lastStrikeAt: cancelNow, pendingLink: null, activeMatchId: null },
+      );
+      console.log(`[PUNISHMENT_APPLIED] telegramId=${telegramId} — permanently banned after strike ${cancelNewStrikes} (cancelled confirmed match after link reveal).`);
+      await ctx.reply(
+        "🚫 Strike 3! Kau dah kena *permanent ban*.\nPunca: Membatalkan match selepas link didedahkan.\n\nTa-ta! 👋",
+        { parse_mode: "Markdown" },
+      );
+    } else {
+      await User.updateOne(
+        { telegramId },
+        { state: "idle", isWaiting: false, queuedAt: null, cancelCooldownUntil: cooldownUntil, strikes: cancelNewStrikes, lastStrikeAt: cancelNow, pendingLink: null, activeMatchId: null },
+      );
+      console.log(`[MATCH_CANCELLED] telegramId=${telegramId} (@${user.tiktokUsername}) cancelled confirmed match after link reveal.`);
+      console.log(`[USER_COOLDOWN] telegramId=${telegramId} on cooldown until ${cooldownUntil.toISOString()}.`);
+      console.log(`[PUNISHMENT_APPLIED] telegramId=${telegramId} — 24h cooldown applied, strike ${cancelNewStrikes}/3 (cancelled confirmed match after link reveal).`);
+      await ctx.reply(
+        `⚠️ Strike ${cancelNewStrikes}/3!\n\n❌ *Match dibatalkan.*\n\nKamu membatalkan match selepas link didedahkan.\n\n🚫 Akaun anda dalam cooldown selama 24 jam.\n\nJangan cancel lepas link reveal k! 😤`,
+        { parse_mode: "Markdown" },
+      );
+    }
 
     await Queue.deleteOne({ telegramId });
 
@@ -4132,14 +4204,13 @@ export function createBot(): Telegraf {
       }
     }
 
-    // Admin notification — manual match cancellation
-    // partner.state captured before reset — reflects their actual state at time of cancel
+    // Admin notification — confirmed match cancelled after link reveal
     const cancelPartnerStatus = matchStateToStatus(partner?.state);
-    const cancelU1Status = match.user1Id === telegramId ? "⚠️ Manually Cancelled Match" : cancelPartnerStatus;
-    const cancelU2Status = match.user2Id === telegramId ? "⚠️ Manually Cancelled Match" : cancelPartnerStatus;
+    const cancelU1Status = match.user1Id === telegramId ? "❌ Cancelled Confirmed Match After Link Reveal" : cancelPartnerStatus;
+    const cancelU2Status = match.user2Id === telegramId ? "❌ Cancelled Confirmed Match After Link Reveal" : cancelPartnerStatus;
     await notifyAdminMatchCancelled(
       bot, match.user1Id, match.user2Id,
-      `Manual cancel by user — user pressed Cancel Match button.`,
+      `User cancelled confirmed match after links were revealed — both users had pressed Ready To Cut.`,
       match._id.toString(),
       {
         responsibleId: telegramId,
@@ -4147,7 +4218,8 @@ export function createBot(): Telegraf {
         user2Status: cancelU2Status,
         systemActions: [
           "Match cancelled",
-          "24h cooldown applied to cancelling user",
+          cancelNewStrikes >= 3 ? `Permanent ban applied to cancelling user (strike ${cancelNewStrikes})` : `24h cooldown applied to cancelling user (strike ${cancelNewStrikes}/3)`,
+          "Strike issued to cancelling user",
           partner?.pendingLink ? "Partner re-queued with previous link" : "Partner reset to awaiting cut link",
         ],
       },
