@@ -3963,12 +3963,12 @@ export function createBot(): Telegraf {
     await Promise.all([
       bot.telegram.sendMessage(
         match.user1Id,
-        `🎉 Both users are ready!\n\nYour partner:\nTikTok: @${u2?.tiktokUsername}\nTelegram: @${u2?.telegramUsername || "no username"}\n\nTheir cut link:\n${match.link2}\n\nNow complete the cut and press ✅ Done Cut.`,
+        `🎉 Both users are ready!\n\nYour partner:\nTikTok: @${u2?.tiktokUsername}\nTelegram: @${u2?.telegramUsername || "no username"}\n\nTheir cut link:\n${match.link2}\n\nNow complete the cut and press ✅ Done Cut.\n\n⚠️ AMARAN:\nAnda mempunyai 20 minit untuk selesaikan swap ini.\nGagal hantar proof = cooldown 24 jam.\nGhosting berulang = banned kekal.`,
         { ...matchButtons },
       ),
       bot.telegram.sendMessage(
         match.user2Id,
-        `🎉 Both users are ready!\n\nYour partner:\nTikTok: @${u1?.tiktokUsername}\nTelegram: @${u1?.telegramUsername || "no username"}\n\nTheir cut link:\n${match.link1}\n\nNow complete the cut and press ✅ Done Cut.`,
+        `🎉 Both users are ready!\n\nYour partner:\nTikTok: @${u1?.tiktokUsername}\nTelegram: @${u1?.telegramUsername || "no username"}\n\nTheir cut link:\n${match.link1}\n\nNow complete the cut and press ✅ Done Cut.\n\n⚠️ AMARAN:\nAnda mempunyai 20 minit untuk selesaikan swap ini.\nGagal hantar proof = cooldown 24 jam.\nGhosting berulang = banned kekal.`,
         { ...matchButtons },
       ),
     ]);

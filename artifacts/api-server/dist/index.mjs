@@ -46760,7 +46760,12 @@ Telegram: @${u2?.telegramUsername || "no username"}
 Their cut link:
 ${match.link2}
 
-Now complete the cut and press \u2705 Done Cut.`,
+Now complete the cut and press \u2705 Done Cut.
+
+\u26A0\uFE0F AMARAN:
+Anda mempunyai 20 minit untuk selesaikan swap ini.
+Gagal hantar proof = cooldown 24 jam.
+Ghosting berulang = banned kekal.`,
         { ...matchButtons }
       ),
       bot.telegram.sendMessage(
@@ -46774,7 +46779,12 @@ Telegram: @${u1?.telegramUsername || "no username"}
 Their cut link:
 ${match.link1}
 
-Now complete the cut and press \u2705 Done Cut.`,
+Now complete the cut and press \u2705 Done Cut.
+
+\u26A0\uFE0F AMARAN:
+Anda mempunyai 20 minit untuk selesaikan swap ini.
+Gagal hantar proof = cooldown 24 jam.
+Ghosting berulang = banned kekal.`,
         { ...matchButtons }
       )
     ]);
