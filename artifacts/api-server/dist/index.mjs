@@ -43747,7 +43747,9 @@ async function broadcastCutLinkNotification(bot, senderTikTok, senderTelegramId,
           `\u{1F514} Someone new just dropped their cut link! \u{1F440}\u2728
 
 TikTok username:
-@${senderTikTok}`
+@${senderTikTok}
+
+Drop your TikTok cut link sekarang untuk match \u{1F525}`
         );
         sentCount++;
         console.log(`[CUSTOMER_BROADCAST_SENT] telegramId=${u.telegramId} (@${u.tiktokUsername}) sender=@${senderTikTok}`);
